@@ -1,0 +1,17 @@
+name: hidrosistemas
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - jupyter
+  - joblib
+  - pip
+  - pip:
+      - SALib
+      - cma
+      - torch
+      - deepxde

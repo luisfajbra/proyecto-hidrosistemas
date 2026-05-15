@@ -1,106 +1,178 @@
-"""---
+"""Modelo de Saint-Venant 1D para un canal rectangular.
 
-## ⚙️ El Sistema: Saint-Venant 1D
+Se usa la forma conservativa vista en clase:
 
-### Ecuaciones gobernantes
+    dA/dt + dQ/dx = 0
 
-Canal rectangular, flujo 1D no permanente:
+    dQ/dt + d/dx(beta Q^2 / A) + d/dx(g h_c A)
+        - g A (S0 - Sf) = 0
 
-```
-∂h/∂t  +  ∂(hu)/∂x  =  0                              (continuidad)
+Para un canal rectangular:
 
-∂(hu)/∂t  +  ∂(hu² + gh²/2)/∂x  =  -gh(∂B/∂x + Sf)  (momentum)
-```
+    A = B h
+    h_c = h / 2
+    Sf = n^2 Q |Q| / (A^2 R^(4/3))
+    R = A / P,  P = B + 2h
 
-Donde la fricción de Manning es:
-
-```
-Sf = n² · u|u| / h^(4/3)
-```
-
-### Parámetros calibrables
-
-| Parámetro | Símbolo | Rango de búsqueda | Valor "verdadero" |
-|---|---|---|---|
-| Coeficiente de Manning | `n` | 0.010 – 0.060 | **0.035** |
-| Pendiente de fondo | `S₀` | 0.0001 – 0.005 | **0.001** |
-| Caudal base upstream | `Q₀` | 10 – 100 m³/s | **50 m³/s** |
-| Amplitud del hidrograma | `A_hyd` | 20 – 200 m³/s | **100 m³/s** |
-| Ancho del canal | `B_w` | 20 – 80 m | **50 m** |
-
-### Esquema numérico: MacCormack (predictor-corrector)
-
-- 2do orden en espacio y tiempo
-- Condición de estabilidad CFL: `dt ≤ 0.9 · dx / (|u| + √(gh))`
-- Dominio: L = 5000 m, nx = 100 celdas, dx = 50 m
-- Condición upstream: hidrograma triangular sintético
-- Condición downstream: tirante normal (Manning)
-
-### Verificación del modelo ⚠️
-
-Antes de calibrar, verificar con:
-- [ ] Solución analítica de onda cinemática en régimen subcrítico
-- [ ] Conservación de masa en cada paso de tiempo
-- [ ] Caso límite: flujo uniforme permanente → `h` constante
-
-> **Nota:** Es muy común calibrar un modelo mal implementado y no enterarse. ¡La verificación no es opcional!
-
----
-"""
+La funcion `saint_venant_1d` devuelve el hidrograma de salida Q(t, x=L).
 """
 
-## 📊 Parte 1 — Modelo Numérico *(15 pts)*
+from __future__ import annotations
 
-**Responsable principal:** Persona 1 + Persona 2  
-**Duración estimada:** Semana 1
-
-### Checklist
-
-- [ ] Implementar solver `saint_venant_1d(params)` en `src/model.py`
-- [ ] Generación de datos sintéticos con ruido gaussiano (`σ = 5% · Q_max`)
-- [ ] Modo batch funcional (sin GUI, ejecutable desde terminal)
-- [ ] Paralelización con `joblib` para Monte Carlo masivo
-- [ ] Verificación contra solución analítica y conservación de masa
-- [ ] Figura: hidrograma simulado vs. "observado" sintético
-- [ ] Tabla: parámetros verdaderos y condiciones iniciales/frontera
-
-```python
-# Llamada mínima esperada
-Q_sim = saint_venant_1d(params=[n, S0, Q0, A_hyd, B_w])
-```
-
----"""
-
-#Modelo numérico de Saint-Venant 1D para flujo en canal rectangular usando la FORMA CONSERVATIDA
-
-
-"""Canal rectangular, flujo 1D no permanente:
-
-∂h/∂t  +  ∂(hu)/∂x  =  0 (continuidad)
-
-∂(hu)/∂t  +  ∂(hu² + gh²/2)/∂x  =  -gh(∂B/∂x + Sf)  (momentum)"""
 import numpy as np
-def saint_venant_1d(params, L=5000, nx=100, nt=200, dt=1):
-    n, S0, Q0, A_hyd, B_w = params
+
+
+G = 9.81
+MIN_DEPTH = 1e-4
+MIN_AREA = 1e-6
+
+
+def hydraulic_geometry(A: np.ndarray, B_w: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:  # Importante porque convierte el area A en las variables hidraulicas h, h_c y R que usa Saint-Venant.
+    """Retorna h, h_c y R para canal rectangular."""
+    A = np.maximum(A, MIN_AREA)
+    h = np.maximum(A / B_w, MIN_DEPTH)
+    h_c = 0.5 * h
+    per_mojado = B_w + 2.0 * h
+    r_hidra = A / per_mojado
+    return h, h_c, r_hidra
+
+
+def friction_slope(Q: np.ndarray, A: np.ndarray, B_w: float, n: float) -> np.ndarray:  # Importante porque calcula Sf, que representa la perdida de energia por friccion de Manning.
+    """Pendiente de friccion de Manning en funcion de Q y A."""
+    h, hc, R = hydraulic_geometry(A, B_w)
+    return n**2 * Q * np.abs(Q) / (np.maximum(A, MIN_AREA) ** 2 * R ** (4.0 / 3.0))
+
+
+def momentum_flux(Q: np.ndarray, A: np.ndarray, B_w: float, beta: float) -> np.ndarray:  # Importante porque agrupa los terminos de transporte de momentum: inercia beta Q^2/A y presion g h_c A, continuando con el tema de los términso de la ecuacion de SV
+    """Flujo conservativo beta Q^2/A + g h_c A."""
+    h, h_c, R = hydraulic_geometry(A, B_w)
+    A_safe = np.maximum(A, MIN_AREA)
+    return beta * Q**2 / A_safe + G * h_c * A_safe
+
+
+def manning_discharge(h: float, B_w: float, n: float, S0: float) -> float:  # Importante porque calcula el caudal uniforme asociado a un tirante h usando la ecuacion de Manning.
+    """Caudal de Manning para un canal rectangular con tirante h."""
+    A = B_w * h
+    R = A / (B_w + 2.0 * h)
+    return (1.0 / n) * A * R ** (2.0 / 3.0) * np.sqrt(S0)
+
+
+def normal_depth(Q: float, B_w: float, n: float, S0: float) -> float:  # Importante porque da el tirante normal para iniciar el canal y fijar condiciones de frontera estables.
+    """Calcula el tirante normal con Manning por biseccion."""
+    Q_abs = abs(Q)
+    S0 = max(S0, 1e-8)
+
+    lo = MIN_DEPTH
+    hi = 1.0
+    while manning_discharge(hi, B_w, n, S0) < Q_abs:
+        hi *= 2.0
+        if hi > 1000.0:
+            break
+
+    for _ in range(50):
+        mid = 0.5 * (lo + hi)
+        if manning_discharge(mid, B_w, n, S0) < Q_abs:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def _upstream_hydrograph(t: float, total_time: float, Q0: float, A_hyd: float) -> float:  # Importante porque define el caudal de entrada que genera la onda que viaja por el canal.
+    """Hidrograma triangular sintetico: Q0 -> Q0 + A_hyd -> Q0."""
+    if total_time <= 0.0:
+        return Q0
+
+    tau = t / total_time
+    if tau <= 0.5:
+        return Q0 + 2.0 * A_hyd * tau
+    return Q0 + 2.0 * A_hyd * (1.0 - tau)
+
+
+def saint_venant_1d(params, L=5000, nx=100, nt=200, dt=1, beta=1.0):  # Importante porque es el solver principal que integra continuidad y momentum para obtener el hidrograma de salida.
+    """Resuelve Saint-Venant 1D con MacCormack predictor-corrector.
+
+    Parameters
+    ----------
+    params : sequence
+        [n, S0, Q0, A_hyd, B_w], donde n es Manning, S0 la pendiente de
+        fondo, Q0 el caudal base, A_hyd la amplitud del hidrograma y B_w
+        el ancho rectangular.
+
+    Returns
+    -------
+    numpy.ndarray
+        Hidrograma simulado en la frontera aguas abajo, con longitud `nt`.
+    """
+    n, S0, Q0, A_hyd, B_w = map(float, params)
     dx = L / nx
-    g = 9.81
+    total_time = max((nt - 1) * dt, dt)
 
-    # Inicialización de variables
-    h = np.zeros(nx)  # Tirante
-    u = np.zeros(nx)  # Velocidad
-    Q = np.zeros((nt, nx))  # Caudal simulado
+    h0 = normal_depth(Q0, B_w, n, S0)
+    A = np.full(nx, B_w * h0, dtype=float)
+    Q = np.full(nx, Q0, dtype=float)
+    Q_out = np.zeros(nt, dtype=float)
 
-    # Condición inicial: flujo uniforme permanente
-    h[:] = (Q0 / (B_w * np.sqrt(g * h))) ** (3/5)  # Tirante inicial
-    u[:] = Q0 / (B_w * h)  # Velocidad inicial
+    for k in range(nt):
+        t = k * dt
+        q_up = _upstream_hydrograph(t, total_time, Q0, A_hyd)
+        h_up = normal_depth(q_up, B_w, n, S0)
+        A[0] = B_w * h_up
+        Q[0] = q_up
 
-    for t in range(nt):
-        # Predictor (MacCormack)
-        h_pred = np.copy(h)
-        u_pred = np.copy(u)
+        h_down = normal_depth(Q[-2], B_w, n, S0)
+        A[-1] = B_w * h_down
+        Q[-1] = Q[-2]
+        Q_out[k] = Q[-1]
 
-        for i in range(1, nx-1):
-            # Continuidad
-            h_pred[i] = h[i] - dt/dx * (h[i]*u[i] - h[i-1]*u[i-1])
-            # Momentum
-            u_pred[i] = u[i] - dt/dx * (u[i]**2 + g*h[i]/2 - u[i-1]**2 - g*h[i-1]/2)
+        if k == nt - 1:
+            break
+
+        h, _, _ = hydraulic_geometry(A, B_w)
+        celerity = np.sqrt(G * h)
+        velocity = Q / np.maximum(A, MIN_AREA)
+        max_wave_speed = np.max(np.abs(velocity) + celerity)
+        dt_step = min(dt, 0.9 * dx / max(max_wave_speed, 1e-12))
+
+        F_A = Q
+        F_Q = momentum_flux(Q, A, B_w, beta)
+        Sf = friction_slope(Q, A, B_w, n)
+        source_Q = G * A * (S0 - Sf)
+
+        A_pred = A.copy()
+        Q_pred = Q.copy()
+        A_pred[:-1] = A[:-1] - dt_step / dx * (F_A[1:] - F_A[:-1])
+        Q_pred[:-1] = Q[:-1] - dt_step / dx * (F_Q[1:] - F_Q[:-1]) + dt_step * source_Q[:-1]
+
+        q_up_next = _upstream_hydrograph(t + dt_step, total_time, Q0, A_hyd)
+        A_pred[0] = B_w * normal_depth(q_up_next, B_w, n, S0)
+        Q_pred[0] = q_up_next
+        A_pred[-1] = B_w * normal_depth(Q_pred[-2], B_w, n, S0)
+        Q_pred[-1] = Q_pred[-2]
+
+        F_A_pred = Q_pred
+        F_Q_pred = momentum_flux(Q_pred, A_pred, B_w, beta)
+        Sf_pred = friction_slope(Q_pred, A_pred, B_w, n)
+        source_Q_pred = G * A_pred * (S0 - Sf_pred)
+
+        A_new = A.copy()
+        Q_new = Q.copy()
+        A_new[1:] = 0.5 * (
+            A[1:] + A_pred[1:] - dt_step / dx * (F_A_pred[1:] - F_A_pred[:-1])
+        )
+        Q_new[1:] = 0.5 * (
+            Q[1:]
+            + Q_pred[1:]
+            - dt_step / dx * (F_Q_pred[1:] - F_Q_pred[:-1])
+            + dt_step * source_Q_pred[1:]
+        )
+
+        A_new = np.maximum(A_new, B_w * MIN_DEPTH)
+        A_new[0] = B_w * normal_depth(q_up_next, B_w, n, S0)
+        Q_new[0] = q_up_next
+        A_new[-1] = B_w * normal_depth(Q_new[-2], B_w, n, S0)
+        Q_new[-1] = Q_new[-2]
+
+        A, Q = A_new, Q_new
+
+    return Q_out
