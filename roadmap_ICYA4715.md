@@ -75,7 +75,7 @@ Sf = n² · u|u| / h^(4/3)
 - 2do orden en espacio y tiempo
 - Condición de estabilidad CFL: `dt ≤ 0.9 · dx / (|u| + √(gh))`
 - Dominio: L = 5000 m, nx = 100 celdas, dx = 50 m
-- Condición upstream: hidrograma triangular sintético
+- Condición upstream: hidrograma externo (`Q_upstream_m3s`) leído desde CSV
 - Condición downstream: tirante normal (Manning)
 
 ### Verificación del modelo ⚠️
@@ -96,17 +96,21 @@ Antes de calibrar, verificar con:
 
 ### Checklist
 
-- [ ] Implementar solver `saint_venant_1d(params)` en `src/model.py`
-- [ ] Generación de datos sintéticos con ruido gaussiano (`σ = 5% · Q_max`)
-- [ ] Modo batch funcional (sin GUI, ejecutable desde terminal)
-- [ ] Paralelización con `joblib` para Monte Carlo masivo
-- [ ] Verificación contra solución analítica y conservación de masa
-- [ ] Figura: hidrograma simulado vs. "observado" sintético
-- [ ] Tabla: parámetros verdaderos y condiciones iniciales/frontera
+- [x] Implementar solver `saint_venant_1d(params, q_upstream, time_seconds)` en `src/model.py`
+- [x] Generación de datos sintéticos con ruido gaussiano (`σ = 5% · Q_max`)
+- [x] Modo batch funcional (sin GUI, ejecutable desde terminal)
+- [x] Paralelización con `joblib` para Monte Carlo masivo
+- [x] Verificación contra solución analítica y conservación de masa
+- [x] Figura: hidrograma simulado vs. "observado" sintético
+- [x] Tabla: parámetros verdaderos y condiciones iniciales/frontera
 
 ```python
 # Llamada mínima esperada
-Q_sim = saint_venant_1d(params=[n, S0, Q0, A_hyd, B_w])
+Q_sim = saint_venant_1d(
+    params=[n, S0, B_w],
+    q_upstream=Q_upstream,
+    time_seconds=t_seconds,
+)
 ```
 
 ---
