@@ -1,0 +1,436 @@
+================================================================================
+EXPLICACION DE FUNCIONES — Parte 1 y Parte 2
+Proyecto: Saint-Venant 1D (proyecto-hidrosistemas)
+================================================================================
+
+
+################################################################################
+# PARTE 1 — MODELO NUMERICO Y DATOS SINTETICOS
+################################################################################
+
+--- src/config.py ---
+OBS_X_FRACTIONS = (0.5, 1.0)
+  Fracciones de L donde se observa Q: medio del canal y aguas abajo.
+  Mas estaciones => mejor cond(J'J) en calibracion.
+
+observation_stations(L)
+  Devuelve posiciones x (m) y etiquetas ["x=L/2", "x=L"].
+
+Constantes del experimento (parametros "verdaderos"):
+  n=0.035, S0=0.001, Q0=50, A_hyd=100, B_w=50
+  Malla: L=5000 m, nx=100, nt=200, dt=1 s
+  Semilla: 42
+  Ruido: 5% del Q_max
+
+default_true_parameters()
+  Devuelve objeto con todos los valores para tablas del informe.
+
+param_bounds()
+  Rangos para calibracion y Sobol (Parte 2).
+
+
+--- src/model.py (NUCLEO) ---
+Ecuaciones conservativas + MacCormack predictor-corrector.
+Parametros: [n, S0, Q0, A_hyd, B_w]
+
+hydraulic_geometry(A, B_w)
+  De area A obtiene profundidad h, cota piezometrica h_c y radio hidraulico R.
+
+friction_slope(Q, A, B_w, n)
+  Pendiente de friccion Sf (Manning).
+
+momentum_flux(Q, A, B_w, beta)
+  Flujo de cantidad de movimiento para el esquema conservativo.
+
+manning_discharge(h, B_w, n, S0)
+  Caudal en regimen uniforme para un tirante h (formula de Manning).
+
+normal_depth(Q, B_w, n, S0)
+  Tirante normal (profundidad) que corresponde a un caudal Q — por biseccion.
+  Se usa en condiciones iniciales y de frontera aguas abajo.
+
+_upstream_hydrograph(t, total_time, Q0, A_hyd)
+  Hidrograma triangular sintetico en el afluente.
+
+saint_venant_1d(params, L, nx, nt, dt, return_full=False)
+  *** SOLVER PRINCIPAL ***
+  Integra Saint-Venant y devuelve:
+    - Por defecto: vector Q_out(t) en x=L (aguas abajo)
+    - Con return_full=True: dict con t, x, A, Q, Q_out, balance de masa
+
+_integrate_maccormack(...)
+  Bucle temporal interno (predictor-corrector + CFL).
+
+_mass_balance_residual(...)
+  Verifica conservacion de masa: dV/dt vs Q_entrada - Q_salida.
+  Usa integracion trapezoidal compatible NumPy 1.x y 2.x:
+    np.trapezoid si existe, si no np.trapz.
+
+
+--- src/synthetic_data.py ---
+generate_synthetic_data(seed)
+  1) Simula con parametros verdaderos (return_full)
+  2) Extrae Q(t) en varias secciones (config OBS_X_FRACTIONS: x=L/2 y x=L)
+  3) Anade ruido gaussiano sigma = 5% * max(Q) en todas las estaciones
+  Devuelve SyntheticDataset con q_obs shape (n_estaciones, nt)
+
+simulate_stations(params, x_obs, L, nx, nt, dt)
+  Matriz (n_estaciones, nt) de caudales en las x pedidas.
+
+load_synthetic_dataset(path)
+  Carga NPZ nuevo (q_obs_stations) o antiguo (solo x=L).
+
+dataset.y_obs_vector()
+  Vector apilado para OLS/Sobol: [Q en est.0 @ t], [Q en est.1 @ t], ...
+
+IMPORTANTE: tras cambiar a multi-estacion, ejecute de nuevo:
+  python run_part1.py
+  python run_part2.py
+
+save_synthetic_dataset(...)
+  Guarda hidrograma_sintetico.npz en data/synthetic/
+
+
+--- src/verify.py ---
+verify_steady_uniform(...)
+  Flujo permanente: compara h simulado vs tirante normal Manning.
+
+verify_kinematic_peak_delay(...)
+  Retardo del pico del hidrograma vs L/c_k (onda cinematica aproximada).
+
+run_verification()
+  Ejecuta las tres pruebas y devuelve VerificationReport (passed True/False).
+
+  Si run_part1 muestra "Estado: REVISAR":
+    - Manning = 0 y masa ~ 0.14 suelen estar bien.
+    - La prueba cinematica (pico vs L/c_k) es solo aproximada; en Saint-Venant
+      completo el error de tiempo puede ser grande y NO invalida el modelo.
+
+
+--- src/monte_carlo.py ---
+run_monte_carlo(n_samples, n_jobs)
+  Varias simulaciones con parametros aleatorios en paralelo (joblib).
+  Se activa con: python scripts/run_part1.py --monte-carlo N
+
+
+--- scripts/run_part1.py ---
+Orquesta Parte 1 (ejecutar: python run_part1.py desde la raiz del proyecto).
+
+  [1] Verificacion del solver
+  [2] Tabla CSV parametros verdaderos
+  [3] Datos sinteticos + figura hidrograma sim vs observado
+  [4] Monte Carlo opcional (--monte-carlo N)
+
+
+################################################################################
+# PARTE 2 — SENSIBILIDAD (clase nonlinear_v1 + Sobol)
+################################################################################
+
+--- src/sensibilidad.py ---
+
+NOTA IMPORTANTE — Matriz singular / equifinalidad (error corregido)
+-----------------------------------------------------------------
+Al calibrar los 5 parametros [n, S0, Q0, A_hyd, B_w] usando SOLO el hidrograma
+en x=L, la matriz J'J del Jacobiano puede ser SINGULAR o mal condicionada.
+Eso significa EQUIFINALIDAD: distintas combinaciones de parametros producen
+hidrogramas casi iguales en el punto de control.
+
+Antes el codigo hacia np.linalg.inv(J'J) y fallaba con:
+  LinAlgError: Singular matrix
+
+Solucion implementada:
+  _covariance_from_jacobian(jac, sigma2)
+    Calcula Cov = sigma^2 * pinv(J'J + regularizacion pequena).
+    La pseudoinversa permite continuar aunque haya dependencia entre parametros.
+
+  _xt_x_inv_from_jacobian(jac)
+    Misma idea para intervalos de confianza del hidrograma Q(t).
+
+Si cond(J'J) es muy grande (> 1e10), run_sensitivity_analysis imprime AVISO:
+  los IC de OLS (t-student) son APROXIMADOS.
+  Para el informe, priorice los IC de BOOTSTRAP (mas confiables con equifinalidad).
+
+En el articulo puede escribir:
+  "Al ajustar todos los parametros con una sola serie en x=L se observo
+   equifinalidad (J'J mal condicionada). Se reportan IC bootstrap y se discute
+   que parametros con bajo indice de Sobol pueden fijarse en la calibracion."
+
+
+SSC(q, x, fun, dh)
+  Coeficientes de sensibilidad ESCALADOS X' (como en clase).
+  X'[:,i] = (f(q con q_i perturbado) - f(q)) / dh
+  Mismas unidades que la respuesta Q(t).
+
+jacobian(q, x, fun, dh)
+  Jacobiano df/dq por diferencias finitas.
+
+fit_parameters(y_obs, t, q0)
+  Ajuste por minimos cuadrados no lineales (scipy.optimize.least_squares).
+  Encuentra parametros que minimizan |Q_obs - Q_sim(q)| en los nt pasos de tiempo.
+  Devuelve: q_ols, residuales R, Jacobiano J en el optimo, sigma (RMSE).
+
+_covariance_from_jacobian(jac, sigma2)
+  Covarianza de parametros con pinv(J'J + eps*I). Evita fallo por matriz singular.
+
+_xt_x_inv_from_jacobian(jac)
+  (J'J)^+ para calcular bandas de confianza de Q(t) sin invertir matriz singular.
+
+ols_diagnostics(...)
+  A partir de J y sigma: Cov, SE, correlacion entre parametros, IC 95% t-student.
+  Usa _covariance_from_jacobian (no inv directo).
+
+response_confidence_and_prediction_intervals(...)
+  IC 95% (media) e IP 95% (prediccion) del hidrograma Q(t) — formulas de clase.
+  Usa _xt_x_inv_from_jacobian para estabilidad numerica.
+
+check_error_assumptions(...)
+  Valida las 5 suposiciones del modelo de errores:
+    Sup.1 Aditivos (grafico R vs Ypred)
+    Sup.2 Media(R) = 0
+    Sup.3 Varianza constante (grafico R vs t)
+    Sup.4 Errores no correlacionados (conteo de cruces)
+    Sup.5 Normalidad (histograma)
+
+bootstrap_parameters(...)
+  IC 95% de parametros por remuestreo bootstrap (recomendado si hay equifinalidad).
+  Remuestrea residuales, reajusta q, y toma percentiles 2.5% y 97.5%.
+
+run_sensitivity_analysis(...)
+  Pipeline completo Parte 2: OLS + SSC + IC/IP + suposiciones + bootstrap (nboot).
+  Avisa en pantalla si cond(J'J) es muy alta.
+
+save_results(...)
+  Genera figuras y tablas Parte 2, entre ellas:
+    sup01, sup02, sup03, sup04, sup05  (5 suposiciones)
+    ssc_hidrograma.png
+    intervalos_confianza_prediccion.png
+    parametros_intervalos_confianza.png  (IC t y bootstrap)
+    correlacion_parametros.png
+    sobol_indices.png (si se paso resultado Sobol)
+
+
+--- src/sobol.py ---
+
+_sobol_problem()
+  Define el problema SALib con 5 variables y bounds de param_bounds().
+
+_scalar_response(params_row, metric, q_ref)
+  Metrica escalar Y para Sobol:
+    - nrmse (POR DEFECTO): RMSE(Q_sim(t), Q_obs(t)) en x=L — alineado con calibracion
+    - q_peak: max(Q) en x=L (casi solo sensible a Q0; no recomendado para informe)
+    - q_mean: media(Q) en x=L
+
+run_sobol_analysis(n_samples, metric="nrmse", q_obs, n_jobs, seed)
+  Sensibilidad GLOBAL (SALib):
+    - Muestreo Saltelli (uniforme en cada [min, max] del bound)
+    - Indices S1 (primer orden) y ST (total)
+    - Intervalos al 95%: S1_conf, ST_conf (SALib analyze, conf_level=0.95)
+  Total simulaciones ~ n_samples * (2 + num_vars)  -> con p=5: N * 7
+  Ejemplo: --sobol-n 256  =>  ~1792 simulaciones del modelo
+
+
+--- DISTRIBUCIONES (errores vs intervalos vs Sobol) ---
+
+NO son la misma "distribucion" en todo el codigo:
+
+  (A) Modelo de ERRORES / 5 suposiciones (sensibilidad local, clase):
+      R_i = Q_obs - Q_sim  ~  N(0, sigma^2)  (normal, media cero)
+      - Datos sinteticos: ruido gaussiano en synthetic_data.py
+      - Sup.5: histograma de R vs curva norm.pdf en sup05_*.png
+      - IC/IP OLS del hidrograma: factor critico t de Student (n-p g.l.)
+        porque sigma se estima de los datos (muestra finita), NO porque
+        los errores dejen de ser normales. Import: scipy.stats.t as student_t
+        (evita choque con t = vector de tiempo).
+
+  (B) IC de PARAMETROS con equifinalidad:
+      - IC por t-student en OLS: poco fiables si cond(J'J) muy alta
+      - IC bootstrap: percentiles 2.5% y 97.5% (no asume otra ley; remuestrea R)
+
+  (C) Sobol GLOBAL:
+      - Muestreo UNIFORME independiente en cada parametro dentro de los bounds
+      - No es el modelo de errores; es incertidumbre epistemica en [a,b]
+
+
+--- REDACCION PARA EL INFORME — Parte 2 (15 pts, enunciado del curso) ---
+
+Que cumple este repositorio frente al enunciado:
+
+  [x] Al menos un metodo GLOBAL: Sobol S1 y ST (SALib + Saltelli)
+  [x] Justificar metodo, rangos y distribucion de muestreo
+  [x] Indices con incertidumbre (S1_conf, ST_conf; figura con barras)
+  [x] Discusion para calibracion (texto abajo; completar con sus numeros)
+  [+] Complemento local (no sustituye lo global): SSC, OLS, 5 suposiciones,
+      bootstrap de parametros (metodo de clase nonlinear_v1)
+
+
+1) METODO GLOBAL ELEGIDO Y JUSTIFICACION
+----------------------------------------
+Metodo: analisis de sensibilidad basado en varianza de Sobol (indices S1 y ST),
+implementado con SALib, muestreo Saltelli y evaluacion paralela del solver
+Saint-Venant 1D (src/model.py).
+
+Por que Sobol (y no solo sensibilidad local SSC):
+  - Modelo no lineal; con una sola serie en x=L hay equifinalidad.
+  - Sobol explora todo el hiperrectangulo de parametros, no solo el punto OLS.
+  - Saltelli es el esquema estandar para estimar S1/ST con costo acotado.
+
+Salida escalar Y (metrica):
+  Y = RMSE(Q_sim(t; x), Q_obs(t)) en x = L   [metric="nrmse"]
+Se eligio en lugar de Y = max(Q) porque el pico depende casi solo de Q0 y no
+representa bien el ajuste del hidrograma completo (ver GUIA_FIGURAS_PARTE2.txt).
+Esta Y esta alineada con lo que se minimizara en calibracion (Parte 3).
+
+Tamano muestral (documentar en informe):
+  N base Saltelli por defecto: 256  (~1792 corridas del modelo)
+  Roadmap del curso sugiere N=8192 (~57000 simulaciones) para mas estabilidad;
+  puede repetir con:  python run_part2.py --sobol-n 512
+
+
+2) RANGOS Y DISTRIBUCION DE CADA PARAMETRO
+-------------------------------------------
+Definidos en param_bounds() (src/config.py), iguales al roadmap:
+
+  Parametro   Rango [min, max]     Valor sintetico "verdadero"
+  ---------   ----------------     ---------------------------
+  n           [0.01, 0.06]         0.035
+  S0          [0.0001, 0.005]      0.001
+  Q0          [10, 100] m3/s       50
+  A_hyd       [20, 200]            100
+  B_w         [20, 80] m           50
+
+Por que ese rango y no otro:
+  - Son los del enunciado/roadmap ICYA 4715.
+  - Incluyen el valor sintetico con margen (incertidumbre epistemica previa).
+  - Evitan rangos tan estrechos que inflen indices Sobol, o tan amplios que
+    el solver explore regimenes poco fisicos.
+
+Distribucion de muestreo (Sobol):
+  Uniforme en cada dimension, independiente entre parametros (default SALib).
+  Redaccion sugerida: "Al no disponer de PDFs fisicas distintas por parametro,
+  se muestreo con distribucion uniforme en los limites indicados."
+
+
+3) INDICES CON INTERVALOS DE CONFIANZA
+--------------------------------------
+Archivos:
+  - data/synthetic/sobol_indices.csv
+  - figures/sobol_indices.png
+
+Los intervalos S1_conf y ST_conf son al 95% (conf_level=0.95 en sobol.analyze).
+No entregar Sobol sin barras: la figura incluye barras de error.
+
+Ejemplo de resultados guardados (RMSE vs Q_obs; N=256 — reemplace si re-corre):
+
+  Parametro   S1      S1_conf    ST      ST_conf
+  Q0          ~1.00   ~0.16      ~1.00   ~0.13
+  n,S0,A_hyd,B_w  ~0  ~0         ~0      ~0
+
+Interpretacion honesta:
+  Con Y = RMSE frente a Q_obs fijo, la varianza de Y la domina Q0 (caudal de
+  entrada). Los demas parametros pueden mostrar S1~0 por equifinalidad: muchas
+  combinaciones dan RMSE similar con una sola observacion en L.
+  Esto NO contradice que n y S0 sean importantes fisicamente; cambia la PREGUNTA
+  que responde Sobol. Compare con graficos SSC locales en el optimo calibrado.
+
+
+4) DISCUSION: INFLUYENTES VS POCO SENSIBLES Y CALIBRACION
+---------------------------------------------------------
+Influyente (Sobol global con RMSE, corrida de referencia):
+  Q0 — controla fuerte la magnitud del hidrograma y el RMSE vs observacion.
+
+Poco sensibles en esa metrica global:
+  n, S0, A_hyd, B_w (indices ~0 en el CSV de ejemplo).
+
+Consecuencias para Parte 3 (calibracion):
+  1. No calibrar ciegamente 5 parametros con solo Q en x=L (equifinalidad).
+  2. Priorizar Q0; revisar n y S0 con SSC local y correlacion entre parametros.
+  3. Parametros con ST ~ 0: fijar a valor previo/literatura o acotar mucho
+     (+/- 10% alrededor del inicial) para reducir dimensionalidad en CMA-ES/GLUE.
+  4. No gastar presupuesto del optimizador en direcciones con ST ~ 0.
+  5. Si el curso lo permite: mas observaciones (varios x, masa, etc.) para
+     separar n y S0.
+
+Frase tipo para el informe:
+  "Se observo equifinalidad al calibrar cinco parametros con una sola serie en
+   x=L (J'J mal condicionada). Se reportan IC bootstrap para parametros e indices
+   Sobol con barras de incertidumbre; los parametros con bajo ST se fijan o se
+   excluyen del espacio de busqueda en la calibracion global."
+
+
+5) COMANDOS run_part2.py (diferencias)
+--------------------------------------
+  python run_part2.py
+      -> bootstrap=200 (default), sobol-n=256 (default)
+
+  python run_part2.py --bootstrap 300 --sobol-n 256
+      -> solo aumenta bootstrap a 300; Sobol igual (256)
+
+  python run_part2.py --skip-sobol
+      -> sin analisis global (solo local + figuras)
+
+  python run_part2.py --bootstrap 0
+      -> sin IC bootstrap de parametros
+
+
+--- scripts/run_part2.py ---
+Orquesta Parte 2 (ejecutar: python run_part2.py).
+
+  [1] OLS + SSC + IC (+ bootstrap por defecto n=200)
+  [2] Sobol Saltelli (--sobol-n 256; omitir con --skip-sobol)
+  [3] Guarda figuras en figures/ y tablas en data/synthetic/
+
+Opciones utiles:
+  python run_part2.py --skip-sobol          # mas rapido (sin Sobol global)
+  python run_part2.py --bootstrap 500       # mas repeticiones bootstrap
+  python run_part2.py --sobol-n 512 --sobol-jobs 4
+
+
+################################################################################
+# ARCHIVOS .bat (opcionales, Windows)
+################################################################################
+
+fix_entorno.bat      -> crea .venv e instala requirements (1a vez)
+ejecutar_part1.bat   -> llama a run_part1.py con .venv
+ejecutar_part2.bat   -> llama a run_part2.py con .venv
+
+NO ejecute src/model.py directamente (es libreria; imports relativos fallan).
+
+
+################################################################################
+# NOTEBOOKS
+################################################################################
+
+notebooks/01_model_verification.ipynb  -> Parte 1 interactiva
+notebooks/02_sensibilidad.ipynb        -> Parte 2 (SSC + suposiciones + Sobol)
+notebooks/03_calibracion.ipynb         -> Parte 3 (pendiente)
+notebooks/04_pinn.ipynb                -> Parte 4 (pendiente)
+
+
+################################################################################
+# LLAMADA MINIMA DESDE PYTHON
+################################################################################
+
+  from src.model import saint_venant_1d
+  Q = saint_venant_1d([0.035, 0.001, 50.0, 100.0, 50.0])
+
+  from src.sensibilidad import run_sensitivity_analysis
+  result = run_sensitivity_analysis(nboot=200)
+
+================================================================================
+# RESUMEN ERRORES FRECUENTES
+================================================================================
+
+1) "Singular matrix" en Parte 2
+   -> Corregido con pinv(J'J). Ver seccion equifinalidad arriba.
+   -> Use IC bootstrap en el informe.
+
+2) "No module named src.utils"
+   -> utils.py fue eliminado; model.py integra trapezoid/trapz directamente.
+
+3) Ejecutar src/model.py
+   -> Incorrecto. Use run_part1.py o run_part2.py.
+
+4) hidrosistemas\Scripts\python.exe no encontrado
+   -> Venv viejo de otro PC. Use .venv (fix_entorno.bat).
+
+================================================================================

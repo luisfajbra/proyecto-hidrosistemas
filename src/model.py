@@ -29,7 +29,7 @@ MIN_DEPTH = 1e-4
 MIN_AREA = 1e-6
 
 
-def hydraulic_geometry(A: np.ndarray, B_w: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def hydraulic_geometry(A: np.ndarray, B_w: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:  # Importante porque convierte el area A en las variables hidraulicas h, h_c y R que usa Saint-Venant.
     """Retorna h, h_c y R para canal rectangular."""
     A = np.maximum(A, MIN_AREA)
     h = np.maximum(A / B_w, MIN_DEPTH)
@@ -39,28 +39,27 @@ def hydraulic_geometry(A: np.ndarray, B_w: float) -> tuple[np.ndarray, np.ndarra
     return h, h_c, r_hidra
 
 
-def friction_slope(Q: np.ndarray, A: np.ndarray, B_w: float, n: float) -> np.ndarray:
+def friction_slope(Q: np.ndarray, A: np.ndarray, B_w: float, n: float) -> np.ndarray:  # Importante porque calcula Sf, que representa la perdida de energia por friccion de Manning.
     """Pendiente de friccion de Manning en funcion de Q y A."""
-    _, _, R = hydraulic_geometry(A, B_w)
-    A_safe = np.maximum(A, MIN_AREA)
-    return n**2 * Q * np.abs(Q) / (A_safe**2 * R ** (4.0 / 3.0))
+    h, hc, R = hydraulic_geometry(A, B_w)
+    return n**2 * Q * np.abs(Q) / (np.maximum(A, MIN_AREA) ** 2 * R ** (4.0 / 3.0))
 
 
-def momentum_flux(Q: np.ndarray, A: np.ndarray, B_w: float, beta: float) -> np.ndarray:
+def momentum_flux(Q: np.ndarray, A: np.ndarray, B_w: float, beta: float) -> np.ndarray:  # Importante porque agrupa los terminos de transporte de momentum: inercia beta Q^2/A y presion g h_c A, continuando con el tema de los términso de la ecuacion de SV
     """Flujo conservativo beta Q^2/A + g h_c A."""
-    _, h_c, _ = hydraulic_geometry(A, B_w)
+    h, h_c, R = hydraulic_geometry(A, B_w)
     A_safe = np.maximum(A, MIN_AREA)
     return beta * Q**2 / A_safe + G * h_c * A_safe
 
 
-def manning_discharge(h: float, B_w: float, n: float, S0: float) -> float:
+def manning_discharge(h: float, B_w: float, n: float, S0: float) -> float:  # Importante porque calcula el caudal uniforme asociado a un tirante h usando la ecuacion de Manning.
     """Caudal de Manning para un canal rectangular con tirante h."""
     A = B_w * h
     R = A / (B_w + 2.0 * h)
     return (1.0 / n) * A * R ** (2.0 / 3.0) * np.sqrt(S0)
 
 
-def normal_depth(Q: float, B_w: float, n: float, S0: float) -> float:
+def normal_depth(Q: float, B_w: float, n: float, S0: float) -> float:  # Importante porque da el tirante normal para iniciar el canal y fijar condiciones de frontera estables.
     """Calcula el tirante normal con Manning por biseccion."""
     Q_abs = abs(Q)
     S0 = max(S0, 1e-8)
@@ -81,259 +80,153 @@ def normal_depth(Q: float, B_w: float, n: float, S0: float) -> float:
     return 0.5 * (lo + hi)
 
 
-def _parse_params(params: list[float] | tuple[float, ...] | np.ndarray) -> tuple[float, float, float]:
-    """Desempaca [n, S0, B_w]."""
-    values = list(map(float, params))
-    if len(values) != 3:
-        raise ValueError("params debe ser [n, S0, B_w].")
-    n, S0, B_w = values
-    return n, S0, B_w
+def _upstream_hydrograph(t: float, total_time: float, Q0: float, A_hyd: float) -> float:  # Importante porque define el caudal de entrada que genera la onda que viaja por el canal.
+    """Hidrograma triangular sintetico: Q0 -> Q0 + A_hyd -> Q0."""
+    if total_time <= 0.0:
+        return Q0
+
+    tau = t / total_time
+    if tau <= 0.5:
+        return Q0 + 2.0 * A_hyd * tau
+    return Q0 + 2.0 * A_hyd * (1.0 - tau)
 
 
-def _apply_boundaries(
-    A: np.ndarray,
-    Q: np.ndarray,
-    q_up: float,
-    B_w: float,
-    n: float,
-    S0: float,
-) -> None:
-    """Actualiza condiciones de frontera aguas arriba y aguas abajo."""
-    A[0] = B_w * normal_depth(q_up, B_w, n, S0)
-    Q[0] = q_up
-    A[-1] = B_w * normal_depth(Q[-2], B_w, n, S0)
-    Q[-1] = Q[-2]
-
-
-def _advance_one_step(
-    A: np.ndarray,
-    Q: np.ndarray,
-    dt_step: float,
-    dx: float,
-    t_next: float,
-    time_seconds: np.ndarray,
-    q_upstream: np.ndarray,
-    B_w: float,
-    n: float,
-    S0: float,
-    beta: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Avanza un subpaso MacCormack usando el caudal externo interpolado."""
-    F_A = Q
-    F_Q = momentum_flux(Q, A, B_w, beta)
-    Sf = friction_slope(Q, A, B_w, n)
-    source_Q = G * A * (S0 - Sf)
-
-    A_pred = A.copy()
-    Q_pred = Q.copy()
-    A_pred[:-1] = A[:-1] - dt_step / dx * (F_A[1:] - F_A[:-1])
-    Q_pred[:-1] = Q[:-1] - dt_step / dx * (F_Q[1:] - F_Q[:-1]) + dt_step * source_Q[:-1]
-
-    q_up_next = float(np.interp(t_next, time_seconds, q_upstream))
-    _apply_boundaries(A_pred, Q_pred, q_up_next, B_w, n, S0)
-
-    F_A_pred = Q_pred
-    F_Q_pred = momentum_flux(Q_pred, A_pred, B_w, beta)
-    Sf_pred = friction_slope(Q_pred, A_pred, B_w, n)
-    source_Q_pred = G * A_pred * (S0 - Sf_pred)
-
-    A_new = A.copy()
-    Q_new = Q.copy()
-    A_new[1:] = 0.5 * (
-        A[1:]
-        + A_pred[1:]
-        - dt_step / dx * (F_A_pred[1:] - F_A_pred[:-1])
-    )
-    Q_new[1:] = 0.5 * (
-        Q[1:]
-        + Q_pred[1:]
-        - dt_step / dx * (F_Q_pred[1:] - F_Q_pred[:-1])
-        + dt_step * source_Q_pred[1:]
-    )
-
-    A_new = np.maximum(A_new, B_w * MIN_DEPTH)
-    _apply_boundaries(A_new, Q_new, q_up_next, B_w, n, S0)
-    return A_new, Q_new
-
-
-def _advance_to(
-    A: np.ndarray,
-    Q: np.ndarray,
-    t_current: float,
-    t_target: float,
-    dx: float,
-    time_seconds: np.ndarray,
-    q_upstream: np.ndarray,
-    B_w: float,
-    n: float,
-    S0: float,
-    beta: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Avanza el estado (A, Q) desde t_current hasta t_target con CFL adaptivo."""
-    while t_current < t_target:
-        h, _, _ = hydraulic_geometry(A, B_w)
-        celerity = np.sqrt(G * h)
-        velocity = Q / np.maximum(A, MIN_AREA)
-        max_wave_speed = np.max(np.abs(velocity) + celerity)
-        dt_cfl = 0.9 * dx / max(max_wave_speed, 1e-12)
-        dt_step = min(t_target - t_current, dt_cfl)
-        t_current += dt_step
-        A, Q = _advance_one_step(
-            A, Q, dt_step, dx, t_current,
-            time_seconds, q_upstream, B_w, n, S0, beta,
-        )
-    return A, Q
-
-
-def run_batch(
-    csv_path: str,
-    params,
-    time_col: str = "datetime",
-    q_up_col: str = "Q_upstream_m3s",
-    q_down_col: str = "Q_downstream_m3s",
-    warmup_seconds: float = 3600.0,
-    L: float = 5000,
-    nx: int = 100,
-    beta: float = 1.0,
-):
-    """Carga un CSV, corre el solver y devuelve un DataFrame con resultados.
-
-    El DataFrame incluye Q_upstream, Q_sim_m3s, t_seconds e is_warmup.
-    Si q_down_col existe en el CSV, agrega Q_downstream_m3s y residual_m3s.
-    """
-    import pandas as pd
-
-    df = pd.read_csv(csv_path)
-    ts = pd.to_datetime(df[time_col])
-    t_sec = (ts - ts.iloc[0]).dt.total_seconds().to_numpy(dtype=float)
-    q_up = df[q_up_col].to_numpy(dtype=float)
-
-    Q_sim = saint_venant_1d(
-        params, q_up, t_sec,
-        warmup_seconds=warmup_seconds, L=L, nx=nx, beta=beta,
-    )
-
-    result = {
-        time_col:   ts.values,
-        q_up_col:   q_up,
-        "Q_sim_m3s":  Q_sim,
-        "t_seconds":  t_sec,
-        "is_warmup":  t_sec < (t_sec[0] + warmup_seconds),
-    }
-    if q_down_col and q_down_col in df.columns:
-        q_down = df[q_down_col].to_numpy(dtype=float)
-        result[q_down_col]    = q_down
-        result["residual_m3s"] = q_down - Q_sim
-
-    return pd.DataFrame(result)
-
-
-def saint_venant_1d(
-    params,
-    q_upstream,
-    time_seconds=None,
-    warmup_seconds=0.0,
-    L=5000,
-    nx=100,
-    beta=1.0,
-):
+def saint_venant_1d(params, L=5000, nx=100, nt=200, dt=1, beta=1.0, return_full=False):
     """Resuelve Saint-Venant 1D con MacCormack predictor-corrector.
 
     Parameters
     ----------
     params : sequence
-        [n, S0, B_w].
-    q_upstream : array-like
-        Hidrograma observado o sintetico aguas arriba [m3/s].
-    time_seconds : array-like, optional
-        Tiempos de cada observacion en segundos desde el inicio. Si se omite,
-        se asume un paso uniforme de 1 segundo.
-    warmup_seconds : float, optional
-        Tiempo de calentamiento antes del primer dato. El solver avanza con el
-        primer caudal disponible y no devuelve esos pasos. Por defecto es 0.
+        [n, S0, Q0, A_hyd, B_w], donde n es Manning, S0 la pendiente de
+        fondo, Q0 el caudal base, A_hyd la amplitud del hidrograma y B_w
+        el ancho rectangular.
+    return_full : bool
+        Si es True, devuelve un dict con t, x, A, Q y Q_out (para figuras y verificacion).
 
     Returns
     -------
-    numpy.ndarray
-        Hidrograma simulado en la frontera aguas abajo, con la misma longitud
-        que `q_upstream`.
+    numpy.ndarray o dict
+        Por defecto: hidrograma Q(t) en x=L. Con return_full=True: estado completo.
     """
-    n, S0, B_w = _parse_params(params)
-    q_upstream = np.asarray(q_upstream, dtype=float)
-    if q_upstream.ndim != 1 or len(q_upstream) < 2:
-        raise ValueError("q_upstream debe ser una serie 1D con al menos 2 datos.")
-    if np.any(~np.isfinite(q_upstream)):
-        raise ValueError("q_upstream contiene valores no finitos.")
-    q_upstream = np.maximum(q_upstream, 0.0)
+    result = _integrate_maccormack(params, L=L, nx=nx, nt=nt, dt=dt, beta=beta)
+    if return_full:
+        return result
+    return result["Q_out"]
 
-    if time_seconds is None:
-        time_seconds = np.arange(len(q_upstream), dtype=float)
-    else:
-        time_seconds = np.asarray(time_seconds, dtype=float)
 
-    if time_seconds.shape != q_upstream.shape:
-        raise ValueError("time_seconds y q_upstream deben tener la misma longitud.")
-    if np.any(np.diff(time_seconds) <= 0.0):
-        raise ValueError("time_seconds debe ser estrictamente creciente.")
-    warmup_seconds = float(warmup_seconds)
-    if warmup_seconds < 0.0:
-        raise ValueError("warmup_seconds debe ser mayor o igual a 0.")
-
+def _integrate_maccormack(params, L=5000, nx=100, nt=200, dt=1, beta=1.0):
+    """Integracion interna; usada por saint_venant_1d y por scripts de verificacion."""
+    n, S0, Q0, A_hyd, B_w = map(float, params)
     dx = L / nx
-    nt = len(q_upstream)
+    x = np.linspace(0.0, L, nx)
+    total_time = max((nt - 1) * dt, dt)
 
-    h0 = normal_depth(float(q_upstream[0]), B_w, n, S0)
+    h0 = normal_depth(Q0, B_w, n, S0)
     A = np.full(nx, B_w * h0, dtype=float)
-    Q = np.full(nx, float(q_upstream[0]), dtype=float)
+    Q = np.full(nx, Q0, dtype=float)
     Q_out = np.zeros(nt, dtype=float)
-    _apply_boundaries(A, Q, float(q_upstream[0]), B_w, n, S0)
-
-    if warmup_seconds > 0.0:
-        A, Q = _advance_to(
-            A, Q,
-            float(time_seconds[0]) - warmup_seconds,
-            float(time_seconds[0]),
-            dx, time_seconds, q_upstream, B_w, n, S0, beta,
-        )
+    t_hist = np.zeros(nt, dtype=float)
+    A_hist = np.zeros((nt, nx), dtype=float)
+    Q_hist = np.zeros((nt, nx), dtype=float)
 
     for k in range(nt):
-        _apply_boundaries(A, Q, float(q_upstream[k]), B_w, n, S0)
+        t = k * dt
+        q_up = _upstream_hydrograph(t, total_time, Q0, A_hyd)
+        h_up = normal_depth(q_up, B_w, n, S0)
+        A[0] = B_w * h_up
+        Q[0] = q_up
+
+        h_down = normal_depth(Q[-2], B_w, n, S0)
+        A[-1] = B_w * h_down
+        Q[-1] = Q[-2]
         Q_out[k] = Q[-1]
+        t_hist[k] = t
+        A_hist[k] = A
+        Q_hist[k] = Q
 
         if k == nt - 1:
             break
 
-        A, Q = _advance_to(
-            A, Q,
-            float(time_seconds[k]),
-            float(time_seconds[k + 1]),
-            dx, time_seconds, q_upstream, B_w, n, S0, beta,
+        h, _, _ = hydraulic_geometry(A, B_w)
+        celerity = np.sqrt(G * h)
+        velocity = Q / np.maximum(A, MIN_AREA)
+        max_wave_speed = np.max(np.abs(velocity) + celerity)
+        dt_step = min(dt, 0.9 * dx / max(max_wave_speed, 1e-12))
+
+        F_A = Q
+        F_Q = momentum_flux(Q, A, B_w, beta)
+        Sf = friction_slope(Q, A, B_w, n)
+        source_Q = G * A * (S0 - Sf)
+
+        A_pred = A.copy()
+        Q_pred = Q.copy()
+        A_pred[:-1] = A[:-1] - dt_step / dx * (F_A[1:] - F_A[:-1])
+        Q_pred[:-1] = Q[:-1] - dt_step / dx * (F_Q[1:] - F_Q[:-1]) + dt_step * source_Q[:-1]
+
+        q_up_next = _upstream_hydrograph(t + dt_step, total_time, Q0, A_hyd)
+        A_pred[0] = B_w * normal_depth(q_up_next, B_w, n, S0)
+        Q_pred[0] = q_up_next
+        A_pred[-1] = B_w * normal_depth(Q_pred[-2], B_w, n, S0)
+        Q_pred[-1] = Q_pred[-2]
+
+        F_A_pred = Q_pred
+        F_Q_pred = momentum_flux(Q_pred, A_pred, B_w, beta)
+        Sf_pred = friction_slope(Q_pred, A_pred, B_w, n)
+        source_Q_pred = G * A_pred * (S0 - Sf_pred)
+
+        A_new = A.copy()
+        Q_new = Q.copy()
+        A_new[1:] = 0.5 * (
+            A[1:] + A_pred[1:] - dt_step / dx * (F_A_pred[1:] - F_A_pred[:-1])
+        )
+        Q_new[1:] = 0.5 * (
+            Q[1:]
+            + Q_pred[1:]
+            - dt_step / dx * (F_Q_pred[1:] - F_Q_pred[:-1])
+            + dt_step * source_Q_pred[1:]
         )
 
-    return Q_out
+        A_new = np.maximum(A_new, B_w * MIN_DEPTH)
+        A_new[0] = B_w * normal_depth(q_up_next, B_w, n, S0)
+        Q_new[0] = q_up_next
+        A_new[-1] = B_w * normal_depth(Q_new[-2], B_w, n, S0)
+        Q_new[-1] = Q_new[-2]
+
+        A, Q = A_new, Q_new
+
+    mass_residual = _mass_balance_residual(t_hist, A_hist, Q_hist, x, B_w)
+
+    return {
+        "t": t_hist,
+        "x": x,
+        "A": A_hist,
+        "Q": Q_hist,
+        "Q_out": Q_out,
+        "params": np.array([n, S0, Q0, A_hyd, B_w], dtype=float),
+        "mass_balance_residual": mass_residual,
+        "L": L,
+        "nx": nx,
+        "nt": nt,
+        "dt": dt,
+        "B_w": B_w,
+    }
 
 
-if __name__ == "__main__":
-    import sys
+def _mass_balance_residual(t, A_hist, Q_hist, x, B_w):
+    """Error relativo mediano entre dV/dt y (Q_entrada - Q_salida)."""
+    if hasattr(np, "trapezoid"):
+        volume = np.trapezoid(A_hist, x, axis=1)
+    else:
+        volume = np.trapz(A_hist, x, axis=1)
+    q_in = Q_hist[:, 0]
+    q_out = Q_hist[:, -1]
+    dvol_dt = np.gradient(volume, t)
+    flux_net = q_in - q_out
+    scale = np.max(np.abs(flux_net)) + 1e-9
+    return float(np.median(np.abs(dvol_dt - flux_net) / scale))
 
-    csv = sys.argv[1] if len(sys.argv) > 1 else "data/synthetic/series_corta.csv"
-    resultado = run_batch(csv, [0.035, 0.001, 50.0])
 
-    eval_df = resultado[~resultado["is_warmup"]]
-    obs = eval_df["Q_downstream_m3s"].to_numpy()
-    sim = eval_df["Q_sim_m3s"].to_numpy()
-
-    mae  = float(np.mean(np.abs(obs - sim)))
-    rmse = float(np.sqrt(np.mean((obs - sim) ** 2)))
-    bias = float(np.mean(sim - obs))
-    r    = float(np.corrcoef(obs, sim)[0, 1])
-    denom = float(np.sum((obs - np.mean(obs)) ** 2))
-    nse  = float(1.0 - np.sum((obs - sim) ** 2) / denom) if denom > 0 else float("nan")
-
-    print(f"Archivo : {csv}")
-    print(f"Filas   : {len(resultado):,}  (warmup: {resultado['is_warmup'].sum()})")
-    print(f"MAE     : {mae:.3f} m³/s")
-    print(f"RMSE    : {rmse:.3f} m³/s")
-    print(f"Bias    : {bias:.3f} m³/s")
-    print(f"r       : {r:.4f}")
-    print(f"NSE     : {nse:.4f}")
+def kinematic_wave_speed(q: float, B_w: float, h: float) -> float:
+    """Celeridad cinematica ck = (5/3) u para verificacion."""
+    a = max(B_w * h, MIN_AREA)
+    return (5.0 / 3.0) * (q / a)
