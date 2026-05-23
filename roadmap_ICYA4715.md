@@ -75,7 +75,11 @@ Sf = n² · u|u| / h^(4/3)
 - 2do orden en espacio y tiempo
 - Condición de estabilidad CFL: `dt ≤ 0.9 · dx / (|u| + √(gh))`
 - Dominio: L = 5000 m, nx = 100 celdas, dx = 50 m
+<<<<<<< HEAD
 - Condición upstream: hidrograma externo (`Q_upstream_m3s`) leído desde CSV
+=======
+- Condición upstream: hidrograma triangular sintético
+>>>>>>> 6b4577c (Sensibiidad local y global)
 - Condición downstream: tirante normal (Manning)
 
 ### Verificación del modelo ⚠️
