@@ -1,7 +1,0 @@
-Sup.2 Media~0: mean(R)=6.316e-02 -> OK
-Sup. identificabilidad: cond(J'J)=inf -> REVISAR
-Correlacion parametros max=0.000 -> OK
-Sup.4 No correlacion: 83 cruces (min 100) -> REVISAR
-Sup.1 Aditivos: revisar grafico R vs Ypred
-Sup.3 Var constante: revisar grafico R vs t
-Sup.5 Normalidad: revisar histograma de R
