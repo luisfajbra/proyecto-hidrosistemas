@@ -1,14 +1,16 @@
 """
 Generación de datos sintéticos — Proyecto Saint-Venant 1D (ICYA 4715)
 
-Produce tres archivos en data/synthetic/:
-  batimetria.csv    — perfiles transversales del lecho (estaciones cada 250 m)
-  series_corta.csv  — 500 filas a resolución 15 min  ← pruebas rápidas
-  series_larga.csv  — 20 años a resolución 15 min (~700 000 filas) ← análisis
+Produce cinco archivos en data/synthetic/:
+  batimetria.csv                — perfiles transversales del lecho
+  series_corta_balance.csv      — 500 filas, balance exacto de caudales
+  series_corta_ruido.csv        — 500 filas, mediciones con ruido gaussiano
+  series_larga_balance.csv      — 20 años, balance exacto de caudales
+  series_larga_ruido.csv        — 20 años, mediciones con ruido gaussiano
 
-Usar series_corta para desarrollar y validar el pipeline; escalar a series_larga
-para el análisis final. Ambas tienen las mismas columnas que los datos reales
-esperados → el reemplazo por datos reales es directo (drop-in).
+Usar las series cortas para desarrollar y validar el pipeline; escalar a las
+series largas para el análisis final. Todas tienen las mismas columnas que los
+datos reales esperados → el reemplazo por datos reales es directo (drop-in).
 
 Ejecutar:  python data/sinteticos.py
 """
@@ -217,6 +219,7 @@ def generate_timeseries(
     filename: str,
     dt_min: float = 15.0,
     n_steps: int | None = None,
+    add_noise: bool = False,
 ) -> pd.DataFrame:
     """
     Genera una serie de n_years años a resolución dt_min minutos.
@@ -225,7 +228,9 @@ def generate_timeseries(
     Flujo de generación:
       Q_upstream + q_lat lateral = Q_downstream → Manning normal depth → h_outlet
 
-    Todas las señales reciben ruido gaussiano σ = 5 % del máximo respectivo.
+    Si add_noise=True, las señales reciben ruido gaussiano σ = 5 % del máximo
+    respectivo. Si add_noise=False, Q_downstream = Q_upstream + q_lat después
+    del redondeo del CSV.
 
     Columnas: datetime, Q_upstream_m3s, q_lat_m3s, Q_downstream_m3s, h_outlet_m
     """
@@ -248,18 +253,24 @@ def generate_timeseries(
     # Tirante en el outlet (Manning)
     h_true = normal_depth(Q_down_true)
 
-    # Ruido
-    sigma_Q = NOISE_FRAC * float(Q_up_true.max())
-    sigma_lat = NOISE_FRAC * float(Q_lat_true.max())
-    sigma_h = NOISE_FRAC * float(h_true.max())
+    if add_noise:
+        sigma_Q = NOISE_FRAC * float(Q_up_true.max())
+        sigma_lat = NOISE_FRAC * float(Q_lat_true.max())
+        sigma_h = NOISE_FRAC * float(h_true.max())
 
-    Q_up   = np.maximum(Q_up_true   + rng.normal(0.0, sigma_Q, N), 0.0)
-    Q_lat  = np.maximum(Q_lat_true  + rng.normal(0.0, sigma_lat, N), 0.0)
-    h_out  = np.maximum(h_true      + rng.normal(0.0, sigma_h, N), 0.01)
+        Q_up = np.maximum(Q_up_true + rng.normal(0.0, sigma_Q, N), 0.0)
+        Q_lat = np.maximum(Q_lat_true + rng.normal(0.0, sigma_lat, N), 0.0)
+        Q_down = np.maximum(Q_down_true + rng.normal(0.0, sigma_Q, N), 0.0)
+        h_out = np.maximum(h_true + rng.normal(0.0, sigma_h, N), 0.01)
 
-    Q_up_csv = Q_up.round(3)
-    Q_lat_csv = Q_lat.round(3)
-    Q_down_csv = (Q_up_csv + Q_lat_csv).round(3)
+        Q_up_csv = Q_up.round(3)
+        Q_lat_csv = Q_lat.round(3)
+        Q_down_csv = Q_down.round(3)
+    else:
+        Q_up_csv = Q_up_true.round(3)
+        Q_lat_csv = Q_lat_true.round(3)
+        Q_down_csv = (Q_up_csv + Q_lat_csv).round(3)
+        h_out = h_true
 
     df = pd.DataFrame({
         "datetime":           ts,
@@ -289,25 +300,44 @@ def generate(output_dir: str = "data/synthetic") -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     # Semillas hijas independientes y reproducibles
-    master              = np.random.SeedSequence(SEED)
-    s_bathy, s_corta, s_larga = master.spawn(3)
+    master = np.random.SeedSequence(SEED)
+    s_bathy, s_corta_balance, s_corta_ruido, s_larga_balance, s_larga_ruido = master.spawn(5)
 
     print("--- Batimetria (secciones transversales cada 250 m) ---")
     generate_bathymetry(np.random.default_rng(s_bathy), out)
 
-    print(f"--- Serie corta  ({SHORT_SERIES_STEPS} filas - 15 min - 2022-01-01) ---")
+    print(f"--- Serie corta balance ({SHORT_SERIES_STEPS} filas - 15 min - 2022-01-01) ---")
     generate_timeseries(
         n_years=1, start_date="2022-01-01",
-        rng=np.random.default_rng(s_corta),
-        output_dir=out, filename="series_corta.csv",
+        rng=np.random.default_rng(s_corta_balance),
+        output_dir=out, filename="series_corta_balance.csv",
         n_steps=SHORT_SERIES_STEPS,
+        add_noise=False,
     )
 
-    print("--- Serie larga  (20 anios - 15 min - 2000-01-01) ---")
+    print(f"--- Serie corta ruido ({SHORT_SERIES_STEPS} filas - 15 min - 2022-01-01) ---")
+    generate_timeseries(
+        n_years=1, start_date="2022-01-01",
+        rng=np.random.default_rng(s_corta_ruido),
+        output_dir=out, filename="series_corta_ruido.csv",
+        n_steps=SHORT_SERIES_STEPS,
+        add_noise=True,
+    )
+
+    print("--- Serie larga balance (20 anios - 15 min - 2000-01-01) ---")
     generate_timeseries(
         n_years=20, start_date="2000-01-01",
-        rng=np.random.default_rng(s_larga),
-        output_dir=out, filename="series_larga.csv",
+        rng=np.random.default_rng(s_larga_balance),
+        output_dir=out, filename="series_larga_balance.csv",
+        add_noise=False,
+    )
+
+    print("--- Serie larga ruido (20 anios - 15 min - 2000-01-01) ---")
+    generate_timeseries(
+        n_years=20, start_date="2000-01-01",
+        rng=np.random.default_rng(s_larga_ruido),
+        output_dir=out, filename="series_larga_ruido.csv",
+        add_noise=True,
     )
 
     print(f"\nListo. Archivos en: {out.resolve()}")
