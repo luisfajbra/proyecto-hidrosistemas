@@ -91,7 +91,16 @@ def _upstream_hydrograph(t: float, total_time: float, Q0: float, A_hyd: float) -
     return Q0 + 2.0 * A_hyd * (1.0 - tau)
 
 
-def saint_venant_1d(params, L=5000, nx=100, nt=200, dt=1, beta=1.0, return_full=False):
+def saint_venant_1d(
+    params,
+    L=5000,
+    nx=100,
+    nt=200,
+    dt=1,
+    beta=1.0,
+    q_lat=None,
+    return_full=False,
+):
     """Resuelve Saint-Venant 1D con MacCormack predictor-corrector.
 
     Parameters
@@ -100,6 +109,9 @@ def saint_venant_1d(params, L=5000, nx=100, nt=200, dt=1, beta=1.0, return_full=
         [n, S0, Q0, A_hyd, B_w], donde n es Manning, S0 la pendiente de
         fondo, Q0 el caudal base, A_hyd la amplitud del hidrograma y B_w
         el ancho rectangular.
+    q_lat : None, float o array-like
+        Aporte lateral total del tramo [m3/s]. Si es array, debe tener nt valores.
+        Internamente se reparte uniformemente como q_lat/L [m2/s].
     return_full : bool
         Si es True, devuelve un dict con t, x, A, Q y Q_out (para figuras y verificacion).
 
@@ -108,18 +120,38 @@ def saint_venant_1d(params, L=5000, nx=100, nt=200, dt=1, beta=1.0, return_full=
     numpy.ndarray o dict
         Por defecto: hidrograma Q(t) en x=L. Con return_full=True: estado completo.
     """
-    result = _integrate_maccormack(params, L=L, nx=nx, nt=nt, dt=dt, beta=beta)
+    result = _integrate_maccormack(
+        params, L=L, nx=nx, nt=nt, dt=dt, beta=beta, q_lat=q_lat
+    )
     if return_full:
         return result
     return result["Q_out"]
 
 
-def _integrate_maccormack(params, L=5000, nx=100, nt=200, dt=1, beta=1.0):
+def _prepare_lateral_inflow(q_lat, nt: int) -> np.ndarray:
+    """Serie temporal del aporte lateral total del tramo [m3/s]."""
+    if q_lat is None:
+        return np.zeros(nt, dtype=float)
+
+    if np.isscalar(q_lat):
+        return np.full(nt, float(q_lat), dtype=float)
+
+    q_lat_arr = np.asarray(q_lat, dtype=float)
+    if q_lat_arr.ndim != 1:
+        raise ValueError("q_lat debe ser None, escalar o un arreglo 1D.")
+    if len(q_lat_arr) != nt:
+        raise ValueError(f"q_lat debe tener longitud nt={nt}; recibido {len(q_lat_arr)}.")
+    return q_lat_arr
+
+
+def _integrate_maccormack(params, L=5000, nx=100, nt=200, dt=1, beta=1.0, q_lat=None):
     """Integracion interna; usada por saint_venant_1d y por scripts de verificacion."""
     n, S0, Q0, A_hyd, B_w = map(float, params)
     dx = L / nx
     x = np.linspace(0.0, L, nx)
     total_time = max((nt - 1) * dt, dt)
+    q_lat_total = _prepare_lateral_inflow(q_lat, nt)
+    q_lat_unit = q_lat_total / max(float(L), 1e-12)
 
     h0 = normal_depth(Q0, B_w, n, S0)
     A = np.full(nx, B_w * h0, dtype=float)
@@ -157,10 +189,11 @@ def _integrate_maccormack(params, L=5000, nx=100, nt=200, dt=1, beta=1.0):
         F_Q = momentum_flux(Q, A, B_w, beta)
         Sf = friction_slope(Q, A, B_w, n)
         source_Q = G * A * (S0 - Sf)
+        source_A = q_lat_unit[k]
 
         A_pred = A.copy()
         Q_pred = Q.copy()
-        A_pred[:-1] = A[:-1] - dt_step / dx * (F_A[1:] - F_A[:-1])
+        A_pred[:-1] = A[:-1] - dt_step / dx * (F_A[1:] - F_A[:-1]) + dt_step * source_A
         Q_pred[:-1] = Q[:-1] - dt_step / dx * (F_Q[1:] - F_Q[:-1]) + dt_step * source_Q[:-1]
 
         q_up_next = _upstream_hydrograph(t + dt_step, total_time, Q0, A_hyd)
@@ -177,7 +210,10 @@ def _integrate_maccormack(params, L=5000, nx=100, nt=200, dt=1, beta=1.0):
         A_new = A.copy()
         Q_new = Q.copy()
         A_new[1:] = 0.5 * (
-            A[1:] + A_pred[1:] - dt_step / dx * (F_A_pred[1:] - F_A_pred[:-1])
+            A[1:]
+            + A_pred[1:]
+            - dt_step / dx * (F_A_pred[1:] - F_A_pred[:-1])
+            + dt_step * source_A
         )
         Q_new[1:] = 0.5 * (
             Q[1:]
@@ -194,7 +230,7 @@ def _integrate_maccormack(params, L=5000, nx=100, nt=200, dt=1, beta=1.0):
 
         A, Q = A_new, Q_new
 
-    mass_residual = _mass_balance_residual(t_hist, A_hist, Q_hist, x, B_w)
+    mass_residual = _mass_balance_residual(t_hist, A_hist, Q_hist, x, q_lat_total)
 
     return {
         "t": t_hist,
@@ -204,6 +240,8 @@ def _integrate_maccormack(params, L=5000, nx=100, nt=200, dt=1, beta=1.0):
         "Q_out": Q_out,
         "params": np.array([n, S0, Q0, A_hyd, B_w], dtype=float),
         "mass_balance_residual": mass_residual,
+        "q_lat": q_lat_total,
+        "q_lat_unit": q_lat_unit,
         "L": L,
         "nx": nx,
         "nt": nt,
@@ -212,7 +250,7 @@ def _integrate_maccormack(params, L=5000, nx=100, nt=200, dt=1, beta=1.0):
     }
 
 
-def _mass_balance_residual(t, A_hist, Q_hist, x, B_w):
+def _mass_balance_residual(t, A_hist, Q_hist, x, q_lat_total=None):
     """Error relativo mediano entre dV/dt y (Q_entrada - Q_salida)."""
     if hasattr(np, "trapezoid"):
         volume = np.trapezoid(A_hist, x, axis=1)
@@ -220,8 +258,9 @@ def _mass_balance_residual(t, A_hist, Q_hist, x, B_w):
         volume = np.trapz(A_hist, x, axis=1)
     q_in = Q_hist[:, 0]
     q_out = Q_hist[:, -1]
+    q_lat = _prepare_lateral_inflow(q_lat_total, len(t))
     dvol_dt = np.gradient(volume, t)
-    flux_net = q_in - q_out
+    flux_net = q_in - q_out + q_lat
     scale = np.max(np.abs(flux_net)) + 1e-9
     return float(np.median(np.abs(dvol_dt - flux_net) / scale))
 

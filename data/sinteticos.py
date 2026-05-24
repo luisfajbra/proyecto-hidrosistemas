@@ -3,7 +3,7 @@ Generación de datos sintéticos — Proyecto Saint-Venant 1D (ICYA 4715)
 
 Produce tres archivos en data/synthetic/:
   batimetria.csv    — perfiles transversales del lecho (estaciones cada 250 m)
-  series_corta.csv  — 2 años a resolución 15 min  (~70 000 filas)  ← pruebas
+  series_corta.csv  — 500 filas a resolución 15 min  ← pruebas rápidas
   series_larga.csv  — 20 años a resolución 15 min (~700 000 filas) ← análisis
 
 Usar series_corta para desarrollar y validar el pipeline; escalar a series_larga
@@ -40,6 +40,7 @@ MEANDER_A  = 8.0   # amplitud meandering del talweg            [m]
 EVENTS_PER_YEAR = 8    # valor esperado de crecidas/año (Poisson)
 NOISE_FRAC      = 0.05 # σ = 5 % del máximo
 SEED            = 42
+SHORT_SERIES_STEPS = 500
 
 
 # ── Física auxiliar ────────────────────────────────────────────────────────────
@@ -47,13 +48,6 @@ SEED            = 42
 def normal_depth(Q: np.ndarray) -> np.ndarray:
     """Tirante normal de Manning — canal rectangular ancho [m]."""
     return (Q * N_MANN / (B_W * np.sqrt(S0))) ** 0.6
-
-
-def _travel_time_steps(dt_min: float) -> float:
-    """Lag cinemático a lo largo del canal expresado en número de pasos."""
-    h0 = normal_depth(np.asarray([Q0]))[0]
-    c  = (5.0 / 3.0) * (Q0 / (B_W * h0))   # celeridad cinemática [m/s]
-    return (L / c) / (dt_min * 60.0)         # lag en pasos de dt_min min
 
 
 def _seasonal_factor(t_days: np.ndarray) -> np.ndarray: #Revisar 
@@ -186,6 +180,35 @@ def _build_upstream(n_steps: int, dt_min: float, rng: np.random.Generator) -> np
     return Q
 
 
+def _build_lateral_inflow(
+    Q_up_true: np.ndarray,
+    dt_min: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """
+    Construye un aporte lateral agregado q_lat(t) [m3/s].
+
+    La señal representa escorrentía difusa/tributarios pequeños:
+    - base lateral baja, positiva y estacional (~4-8 % de Q0)
+    - respuesta adicional durante crecidas aguas arriba
+    - suavizado temporal para evitar saltos no físicos
+    """
+    n_steps = len(Q_up_true)
+    dt_days = dt_min / 1440.0
+    t_days = np.arange(n_steps) * dt_days
+
+    base_frac = rng.uniform(0.04, 0.08)
+    q_base = base_frac * Q0 * _seasonal_factor(t_days)
+    q_base = np.maximum(q_base, 0.5)
+
+    q_excess = np.maximum(Q_up_true - np.percentile(Q_up_true, 35), 0.0)
+    q_event = 0.10 * gaussian_filter1d(q_excess, sigma=max(1.0, 45.0 / dt_min))
+
+    q_lat = q_base + q_event
+    q_lat = np.minimum(q_lat, 0.30 * np.maximum(Q_up_true, Q0))
+    return np.maximum(q_lat, 0.0)
+
+
 def generate_timeseries(
     n_years: int,
     start_date: str,
@@ -193,50 +216,56 @@ def generate_timeseries(
     output_dir: Path,
     filename: str,
     dt_min: float = 15.0,
+    n_steps: int | None = None,
 ) -> pd.DataFrame:
     """
     Genera una serie de n_years años a resolución dt_min minutos.
+    Si n_steps se entrega, genera exactamente ese número de filas.
 
     Flujo de generación:
-      Q_upstream  →  lag cinemático (~53 min)  →  dispersión gaussiana (σ=20 min)
-                  →  Q_downstream  →  Manning normal depth  →  h_outlet
+      Q_upstream + q_lat lateral = Q_downstream → Manning normal depth → h_outlet
 
     Todas las señales reciben ruido gaussiano σ = 5 % del máximo respectivo.
 
-    Columnas: datetime, Q_upstream_m3s, Q_downstream_m3s, h_outlet_m
+    Columnas: datetime, Q_upstream_m3s, q_lat_m3s, Q_downstream_m3s, h_outlet_m
     """
     freq  = f"{int(dt_min)}min"
     start = pd.Timestamp(start_date)
-    end   = start + pd.DateOffset(years=n_years)
-    ts    = pd.date_range(start, end, freq=freq, inclusive="left")
+    if n_steps is None:
+        end = start + pd.DateOffset(years=n_years)
+        ts = pd.date_range(start, end, freq=freq, inclusive="left")
+    else:
+        ts = pd.date_range(start, periods=n_steps, freq=freq)
     N     = len(ts)
 
     # Upstream
     Q_up_true = _build_upstream(N, dt_min, rng)
 
-    # Routing: lag cinemático (fraccionario) + dispersión hidráulica
-    lag_steps   = _travel_time_steps(dt_min)
-    idx         = np.arange(N, dtype=float)
-    Q_lagged    = np.interp(idx - lag_steps, idx, Q_up_true,
-                            left=float(Q_up_true[0]), right=float(Q_up_true[-1]))
-    sigma_disp  = 20.0 / dt_min               # 20 min de dispersión en pasos
-    Q_down_true = gaussian_filter1d(Q_lagged, sigma=sigma_disp)
+    # Aporte lateral agregado en el tramo. No se consideran otras entradas/salidas.
+    Q_lat_true = _build_lateral_inflow(Q_up_true, dt_min, rng)
+    Q_down_true = Q_up_true + Q_lat_true
 
     # Tirante en el outlet (Manning)
     h_true = normal_depth(Q_down_true)
 
     # Ruido
     sigma_Q = NOISE_FRAC * float(Q_up_true.max())
+    sigma_lat = NOISE_FRAC * float(Q_lat_true.max())
     sigma_h = NOISE_FRAC * float(h_true.max())
 
     Q_up   = np.maximum(Q_up_true   + rng.normal(0.0, sigma_Q, N), 0.0)
-    Q_down = np.maximum(Q_down_true + rng.normal(0.0, sigma_Q, N), 0.0)
+    Q_lat  = np.maximum(Q_lat_true  + rng.normal(0.0, sigma_lat, N), 0.0)
     h_out  = np.maximum(h_true      + rng.normal(0.0, sigma_h, N), 0.01)
+
+    Q_up_csv = Q_up.round(3)
+    Q_lat_csv = Q_lat.round(3)
+    Q_down_csv = (Q_up_csv + Q_lat_csv).round(3)
 
     df = pd.DataFrame({
         "datetime":           ts,
-        "Q_upstream_m3s":     Q_up.round(3),
-        "Q_downstream_m3s":   Q_down.round(3),
+        "Q_upstream_m3s":     Q_up_csv,
+        "q_lat_m3s":          Q_lat_csv,
+        "Q_downstream_m3s":   Q_down_csv,
         "h_outlet_m":         h_out.round(4),
     })
 
@@ -266,11 +295,12 @@ def generate(output_dir: str = "data/synthetic") -> None:
     print("--- Batimetria (secciones transversales cada 250 m) ---")
     generate_bathymetry(np.random.default_rng(s_bathy), out)
 
-    print("--- Serie corta  (2 anios - 15 min - 2022-01-01) ---")
+    print(f"--- Serie corta  ({SHORT_SERIES_STEPS} filas - 15 min - 2022-01-01) ---")
     generate_timeseries(
         n_years=1, start_date="2022-01-01",
         rng=np.random.default_rng(s_corta),
         output_dir=out, filename="series_corta.csv",
+        n_steps=SHORT_SERIES_STEPS,
     )
 
     print("--- Serie larga  (20 anios - 15 min - 2000-01-01) ---")
