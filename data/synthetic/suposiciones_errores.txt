@@ -1,0 +1,7 @@
+=== 5 suposiciones (periodo calibracion) ===
+Sup.1 Aditivos: revisar figura sup01_residuales_vs_prediccion.png
+Sup.2 Media cero: mean(R)=3.565e+01 -> REVISAR
+Sup.3 Var constante: revisar sup03_residuales_vs_tiempo.png
+Sup.4 No correlacion: 2 cruces (min 149) -> REVISAR
+Sup.5 Normalidad: revisar sup05_histograma_residuales.png
+Identificabilidad cond(J'J)=2.53e+13 -> REVISAR (usar IC bootstrap)

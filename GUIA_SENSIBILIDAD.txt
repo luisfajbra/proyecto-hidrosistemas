@@ -1,0 +1,213 @@
+================================================================================
+GUIA — Parte 2: notebooks/02_sensitivity.ipynb
+================================================================================
+Proyecto Saint-Venant 1D — ICYA 4715
+
+Este archivo explica cada bloque del notebook de sensibilidad.
+Parte 3 (Monte Carlo + GLUE): notebooks/03_calibration.ipynb (plantilla; retomar despues del 02).
+
+
+################################################################################
+# 0. QUE HACE ESTA PARTE (EN UNA FRASE)
+################################################################################
+
+Ajusta los parametros del canal (n, S0, B_w) para que el modelo reproduzca el
+caudal observado aguas abajo (Q_downstream del CSV), mide que tan bien ajusta,
+valida las 5 suposiciones del error, y calcula la sensibilidad global (Sobol).
+
+
+################################################################################
+# 1. ARCHIVOS QUE USA (NO LOS MODIFICA)
+################################################################################
+
+  data/sinteticos.py
+      Genera los CSV en data/synthetic/
+      Por defecto el notebook usa: series_corta_balance.csv
+      (opcion con ruido: series_corta_ruido.csv si USE_NOISY_CSV = True)
+
+  src/model.py
+      saint_venant_1d([n, S0, B_w], q_upstream=..., time_seconds=..., q_lat=...)
+      Lee el hidrograma de entrada y la malla de tiempo del CSV.
+
+  01_model_verification.ipynb
+      Conviene ejecutarlo antes para comprobar que el solver y el CSV son coherentes.
+
+
+################################################################################
+# 2. PARAMETROS Y PERIODOS
+################################################################################
+
+  Calibrables (3):  n, S0, B_w
+  Fijos en el CSV:  Q aguas arriba, q_lat (columnas del archivo)
+
+  Observacion para el ajuste:
+      Q_downstream_m3s  (caudal "observado" sintetico aguas abajo)
+
+  Particion temporal:
+      Warm-up   : primeros 3600 s (1 h) — no se usa para calibrar ni Sobol
+      Calibracion: 60 % de los pasos despues del warm-up → ajuste OLS
+      Validacion : 30 % siguiente → comprobar que no solo memoriza
+      Sobol      : todo despues del warm-up (metrica escalar Y)
+
+  FAST = True en el notebook:
+      Pocas muestras Sobol, sin bootstrap, sin SSC, sin profiling (rapido)
+  FAST = False para el informe final:
+      NBOOT=200, SOBOL_N=512+, COMPUTE_SSC=True, RUN_PROFILING=True
+
+
+################################################################################
+# 3. CELDA A CELDA DEL NOTEBOOK
+################################################################################
+
+--- Celda 1: Configuracion e imports ---
+  - Define rutas (figures/, data/synthetic/, reports/)
+  - Carga constantes de sinteticos.py (valores verdaderos)
+  - Recarga src/model.py (evita importar codigo viejo del kernel)
+  - Banderas FAST, SOBOL_N, SOBOL_METRIC ("nse", "rmse" o "kge")
+
+--- Celda 2: Carga del CSV ---
+  - Lee series_corta_balance.csv (o larga / con ruido)
+  - Construye mascaras warm-up, calibracion, validacion
+  - Extrae: t_sec, Q_upstream, q_lat, Q_obs
+
+--- Celda 3: Funciones de metricas y simulacion ---
+  - simulate_outlet(params) → vector Q_sim(t) en x=L con el mismo CSV
+  - nse, kge, rmse_m sobre una mascara temporal
+  - sobol_y(params) → numero escalar para Sobol (por defecto Y = 1 - NSE)
+  - Muestra metricas con los parametros "verdaderos" de sinteticos.py
+
+--- Celda 4-5: OLS (minimos cuadrados) ---
+  - Minimiza suma (Q_obs - Q_sim)^2 solo en periodo CALIBRACION
+  - Salida: q_ols (n, S0, B_w estimados), sigma del error, Jacobiano
+  - Guarda: data/synthetic/metricas_ols_cal_val.csv
+
+--- Celda 6: Intervalos de confianza en parametros ---
+  - IC por aproximacion t de Student (si cond(J'J) no es enorme)
+  - IC bootstrap (si NBOOT > 0) — mas fiable si hay equifinalidad
+  - Guarda: data/synthetic/parametros_ols_sensibilidad.csv
+
+--- Celda 7: SSC y 5 suposiciones (texto) ---
+  - SSC: sensibilidad local de Q(t) a cada parametro (si COMPUTE_SSC=True)
+  - Escribe suposiciones_errores.txt con OK/REVISAR
+
+--- Celda 8: Figuras de suposiciones y parametros ---
+  - parametros_intervalos_confianza.png
+  - intervalos_confianza_prediccion.png
+  - sup01 ... sup05 (las 5 suposiciones)
+  - correlacion_parametros.png
+  - ssc_hidrograma.png (si SSC activo)
+
+--- Celda 9-10: Sobol global ---
+  - Saltelli: muchas combinaciones aleatorias de (n, S0, B_w) en rangos
+  - Y = 1 - NSE (o RMSE / 1 - KGE) post warm-up
+  - Indices S1 (efecto directo) y ST (efecto total)
+  - Guarda: data/synthetic/sobol_indices.csv, figures/sobol_indices.png
+
+--- Celda 11-12: Profiling (opcional) ---
+  - Reporte HTML ydata-profiling en reports/profile_latest.html
+  - Solo si RUN_PROFILING=True
+
+
+################################################################################
+# 4. FUNCIONES OBJETIVO (RESUMEN)
+################################################################################
+
+  OLS        : min RMSE en cal  ↔  max NSE en cal (misma idea)
+  NSE        : 1 - SS_res/SS_tot   (1 = perfecto, puede ser < 0 si muy malo)
+  KGE        : balance correlacion, variabilidad y sesgo
+  Sobol Y    : por defecto 1 - NSE  (a mayor Y, peor el ajuste)
+
+
+################################################################################
+# 5. POR QUE HAY VALORES NEGATIVOS (Q o R)
+################################################################################
+
+A) RESIDUALES R = Q_obs - Q_sim  (LO NORMAL)
+
+  R es negativo cuando el modelo SIMULA MAS caudal que el observado.
+  R es positivo cuando el modelo simula MENOS.
+
+  Ejemplo: Q_obs = 40, Q_sim = 45  →  R = -5 m3/s
+
+  Eso NO es un error del programa: es la definicion del residual.
+  En los graficos sup01 se busca una nube aleatoria alrededor de cero, no que
+  R sea siempre positivo.
+
+
+B) CAUDALES Q_sim NEGATIVOS (NO FISICOS — NUMERICO)
+
+  El caudal en un canal abierto deberia ser >= 0. Si Q_sim sale negativo:
+
+  1. Oscilaciones del esquema MacCormack (orden 2) con paso de tiempo grande
+     o cambios bruscos en Q aguas arriba del CSV.
+
+  2. El solver no recorta Q a cero despues de cada paso (a diferencia del CSV
+     sintetico que usa np.maximum(Q, 0)).
+
+  3. Parametros de prueba en Sobol muy distintos a los verdaderos → solucion
+     inestable.
+
+  En 02_sensitivity.ipynb:
+  - simulate_outlet() aplica np.maximum(q, 0) en la salida x=L antes de OLS,
+    metricas, Sobol y figuras (model.py no se modifica).
+
+  Que hacer si persisten malos ajustes:
+  - Revisar figuras: si el solver da muchos negativos antes del recorte, revisar
+    estabilidad numerica (serie balance, notebook 01).
+  - Usar serie balance (sin ruido) para diagnosticar.
+  - Comparar con 01_model_verification (misma CSV y solver).
+  - Para informe: comentar que el esquema puede dar valores no fisicos puntuales
+    y que el ajuste OLS usa el Q en la salida del tramo (x=L).
+
+
+C) NSE NEGATIVO
+
+  Si el modelo es peor que usar la media de Q_obs, NSE < 0. Es posible en
+  validacion o en parametros aleatorios de Sobol. No indica "caudal negativo".
+
+
+################################################################################
+# 6. SALIDAS PRINCIPALES
+################################################################################
+
+  data/synthetic/
+    parametros_ols_sensibilidad.csv
+    metricas_ols_cal_val.csv
+    sobol_indices.csv
+    suposiciones_errores.txt
+    ssc_resumen.csv          (si COMPUTE_SSC)
+
+  figures/
+    parametros_intervalos_confianza.png
+    intervalos_confianza_prediccion.png
+    sobol_indices.png
+    sup01_ ... sup05_*.png
+    correlacion_parametros.png
+    ssc_hidrograma.png
+
+  reports/
+    profile_latest.html      (si RUN_PROFILING)
+
+
+################################################################################
+# 7. PARTE 3 (NOTEBOOK PLANEADO — NO EJECUTAR AUN SI NO LA RETOMAN)
+################################################################################
+
+  notebooks/03_calibration.ipynb
+    - Monte Carlo: monte_carlo_resumen.csv, monte_carlo_kge_hist.png
+    - GLUE: glue_envelope_xL.csv, glue_parametros_aceptados.csv,
+            glue_credibilidad_xL.png
+
+
+################################################################################
+# 8. ORDEN DE EJECUCION RECOMENDADO (AHORA)
+################################################################################
+
+  1. python data/sinteticos.py
+  2. notebooks/01_model_verification.ipynb
+  3. notebooks/02_sensitivity.ipynb   (este)
+  4. (mas adelante) notebooks/03_calibration.ipynb
+
+  Ante cualquier error de import: Kernel → Restart y kernel = .venv
+
+================================================================================
