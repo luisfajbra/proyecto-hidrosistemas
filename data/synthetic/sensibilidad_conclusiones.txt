@@ -1,0 +1,15 @@
+=== Sensibilidad global (Sobol) ===
+Metrica: Y=1-NSE | evaluaciones: 768 | N_JOBS: 3
+Umbral poco sensible: ST < 10% de max(ST) = 0.0000
+
+  n: ST=nan +/- nan  S1=nan  -> poco sensible
+  S0: ST=nan +/- nan  S1=nan  -> poco sensible
+  alpha_Qup: ST=nan +/- nan  S1=nan  -> poco sensible
+  q_lat: ST=nan +/- nan  S1=nan  -> poco sensible
+
+Para calibracion (Parte 3): priorizar parametros INFLUYENTES;
+fijar o acotar fuerte los poco sensibles.
+
+Nota alpha_Qup: si ST(alpha) es bajo, la incertidumbre del aforo no domina
+la respuesta del modelo — el error de medición es tolerable para la calibración.
+Si ST(alpha) es alto, considerar calibración conjunta con n y S0.
