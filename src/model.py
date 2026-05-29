@@ -100,7 +100,6 @@ def saint_venant_1d(
     nt=200,
     dt=1,
     beta=1.0,
-    q_lat=None,
     warmup_seconds=0.0,
     return_full=False,
 ):
@@ -116,9 +115,6 @@ def saint_venant_1d(
         entrada y no calcula el hidrograma triangular interno.
     time_seconds : None o array-like
         Tiempos asociados a q_upstream [s]. Si se entrega, define nt y dt.
-    q_lat : None, float o array-like
-        Aporte lateral total del tramo [m3/s]. Si es array, debe tener nt valores.
-        Internamente se reparte uniformemente como q_lat/L [m2/s].
     warmup_seconds : float
         Se conserva por compatibilidad con notebooks antiguos; run_batch marca
         el warmup en la tabla de salida.
@@ -142,7 +138,6 @@ def saint_venant_1d(
         nt=nt,
         dt=dt,
         beta=beta,
-        q_lat=q_lat,
         q_upstream=q_upstream_series,
         t_values=t_values,
     )
@@ -215,21 +210,6 @@ def _upstream_at_time(
     return float(np.interp(t, t_values, q_upstream, left=q_upstream[0], right=q_upstream[-1]))
 
 
-def _prepare_lateral_inflow(q_lat, nt: int) -> np.ndarray:
-    """Serie temporal del aporte lateral total del tramo [m3/s]."""
-    if q_lat is None:
-        return np.zeros(nt, dtype=float)
-
-    if np.isscalar(q_lat):
-        return np.full(nt, float(q_lat), dtype=float)
-
-    q_lat_arr = np.asarray(q_lat, dtype=float)
-    if q_lat_arr.ndim != 1:
-        raise ValueError("q_lat debe ser None, escalar o un arreglo 1D.")
-    if len(q_lat_arr) != nt:
-        raise ValueError(f"q_lat debe tener longitud nt={nt}; recibido {len(q_lat_arr)}.")
-    return q_lat_arr
-
 
 def _integrate_maccormack(
     params,
@@ -238,7 +218,6 @@ def _integrate_maccormack(
     nt=200,
     dt=1,
     beta=1.0,
-    q_lat=None,
     q_upstream=None,
     t_values=None,
 ):
@@ -251,9 +230,6 @@ def _integrate_maccormack(
     else:
         t_values = np.asarray(t_values, dtype=float)
     total_time = max(float(t_values[-1] - t_values[0]) if nt > 1 else 0.0, dt)
-    q_lat_total = _prepare_lateral_inflow(q_lat, nt)
-    q_lat_unit = q_lat_total / max(float(L), 1e-12)
-
     h0 = normal_depth(Q0, B_w, n, S0)
     A = np.full(nx, B_w * h0, dtype=float)
     Q = np.full(nx, Q0, dtype=float)
@@ -291,11 +267,10 @@ def _integrate_maccormack(
         F_Q = momentum_flux(Q, A, B_w, beta)
         Sf = friction_slope(Q, A, B_w, n)
         source_Q = G * A * (S0 - Sf)
-        source_A = q_lat_unit[k]
 
         A_pred = A.copy()
         Q_pred = Q.copy()
-        A_pred[:-1] = A[:-1] - dt_step / dx * (F_A[1:] - F_A[:-1]) + dt_step * source_A
+        A_pred[:-1] = A[:-1] - dt_step / dx * (F_A[1:] - F_A[:-1])
         Q_pred[:-1] = Q[:-1] - dt_step / dx * (F_Q[1:] - F_Q[:-1]) + dt_step * source_Q[:-1]
 
         q_up_next = _upstream_at_time(
@@ -317,7 +292,6 @@ def _integrate_maccormack(
             A[1:]
             + A_pred[1:]
             - dt_step / dx * (F_A_pred[1:] - F_A_pred[:-1])
-            + dt_step * source_A
         )
         Q_new[1:] = 0.5 * (
             Q[1:]
@@ -334,7 +308,7 @@ def _integrate_maccormack(
 
         A, Q = A_new, Q_new
 
-    mass_residual = _mass_balance_residual(t_hist, A_hist, Q_hist, x, q_lat_total)
+    mass_residual = _mass_balance_residual(t_hist, A_hist, Q_hist, x)
 
     return {
         "t": t_hist,
@@ -345,8 +319,6 @@ def _integrate_maccormack(
         "params": np.array([n, S0, Q0, A_hyd, B_w], dtype=float),
         "mass_balance_residual": mass_residual,
         "q_upstream": np.asarray(q_upstream, dtype=float) if q_upstream is not None else None,
-        "q_lat": q_lat_total,
-        "q_lat_unit": q_lat_unit,
         "L": L,
         "nx": nx,
         "nt": nt,
@@ -355,7 +327,7 @@ def _integrate_maccormack(
     }
 
 
-def _mass_balance_residual(t, A_hist, Q_hist, x, q_lat_total=None):
+def _mass_balance_residual(t, A_hist, Q_hist, x):
     """Error relativo mediano entre dV/dt y (Q_entrada - Q_salida)."""
     if hasattr(np, "trapezoid"):
         volume = np.trapezoid(A_hist, x, axis=1)
@@ -363,9 +335,8 @@ def _mass_balance_residual(t, A_hist, Q_hist, x, q_lat_total=None):
         volume = np.trapz(A_hist, x, axis=1)
     q_in = Q_hist[:, 0]
     q_out = Q_hist[:, -1]
-    q_lat = _prepare_lateral_inflow(q_lat_total, len(t))
     dvol_dt = np.gradient(volume, t)
-    flux_net = q_in - q_out + q_lat
+    flux_net = q_in - q_out
     scale = np.max(np.abs(flux_net)) + 1e-9
     return float(np.median(np.abs(dvol_dt - flux_net) / scale))
 
@@ -387,7 +358,7 @@ def run_batch(
     """
     Ejecuta el solver con un CSV tabular.
 
-    Requiere `datetime` y `Q_upstream_m3s`. Usa `q_lat_m3s` si existe.
+    Requiere `datetime` y `Q_upstream_m3s`.
     Devuelve un DataFrame con Q_sim_m3s, t_seconds, is_warmup y residuales si
     el CSV trae Q_downstream_m3s.
     """
@@ -403,7 +374,6 @@ def run_batch(
         t_seconds = np.arange(len(df), dtype=float)
 
     q_upstream = df["Q_upstream_m3s"].to_numpy(dtype=float)
-    q_lat = df["q_lat_m3s"].to_numpy(dtype=float) if "q_lat_m3s" in df.columns else None
 
     full = saint_venant_1d(
         params,
@@ -412,7 +382,6 @@ def run_batch(
         L=L,
         nx=nx,
         beta=beta,
-        q_lat=q_lat,
         return_full=True,
     )
 

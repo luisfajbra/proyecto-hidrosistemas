@@ -18,7 +18,6 @@ Ejecutar:  python data/sinteticos.py
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from scipy.ndimage import gaussian_filter1d
 
 # ── Parámetros verdaderos del canal ────────────────────────────────────────────
 N_MANN = 0.035   # coeficiente de Manning [-]
@@ -182,34 +181,6 @@ def _build_upstream(n_steps: int, dt_min: float, rng: np.random.Generator) -> np
     return Q
 
 
-def _build_lateral_inflow(
-    Q_up_true: np.ndarray,
-    dt_min: float,
-    rng: np.random.Generator,
-) -> np.ndarray:
-    """
-    Construye un aporte lateral agregado q_lat(t) [m3/s].
-
-    La señal representa escorrentía difusa/tributarios pequeños:
-    - base lateral baja, positiva y estacional (~4-8 % de Q0)
-    - respuesta adicional durante crecidas aguas arriba
-    - suavizado temporal para evitar saltos no físicos
-    """
-    n_steps = len(Q_up_true)
-    dt_days = dt_min / 1440.0
-    t_days = np.arange(n_steps) * dt_days
-
-    base_frac = rng.uniform(0.04, 0.08)
-    q_base = base_frac * Q0 * _seasonal_factor(t_days)
-    q_base = np.maximum(q_base, 0.5)
-
-    q_excess = np.maximum(Q_up_true - np.percentile(Q_up_true, 35), 0.0)
-    q_event = 0.10 * gaussian_filter1d(q_excess, sigma=max(1.0, 45.0 / dt_min))
-
-    q_lat = q_base + q_event
-    q_lat = np.minimum(q_lat, 0.30 * np.maximum(Q_up_true, Q0))
-    return np.maximum(q_lat, 0.0)
-
 
 def generate_timeseries(
     n_years: int,
@@ -226,13 +197,13 @@ def generate_timeseries(
     Si n_steps se entrega, genera exactamente ese número de filas.
 
     Flujo de generación:
-      Q_upstream + q_lat lateral = Q_downstream → Manning normal depth → h_outlet
+      Q_upstream = Q_downstream → Manning normal depth → h_outlet
 
     Si add_noise=True, las señales reciben ruido gaussiano σ = 5 % del máximo
-    respectivo. Si add_noise=False, Q_downstream = Q_upstream + q_lat después
-    del redondeo del CSV.
+    respectivo. Si add_noise=False, Q_downstream = Q_upstream después del
+    redondeo del CSV.
 
-    Columnas: datetime, Q_upstream_m3s, q_lat_m3s, Q_downstream_m3s, h_outlet_m
+    Columnas: datetime, Q_upstream_m3s, Q_downstream_m3s, h_outlet_m
     """
     freq  = f"{int(dt_min)}min"
     start = pd.Timestamp(start_date)
@@ -245,37 +216,26 @@ def generate_timeseries(
 
     # Upstream
     Q_up_true = _build_upstream(N, dt_min, rng)
-
-    # Aporte lateral agregado en el tramo. No se consideran otras entradas/salidas.
-    Q_lat_true = _build_lateral_inflow(Q_up_true, dt_min, rng)
-    Q_down_true = Q_up_true + Q_lat_true
+    Q_down_true = Q_up_true.copy()
 
     # Tirante en el outlet (Manning)
     h_true = normal_depth(Q_down_true)
 
     if add_noise:
         sigma_Q = NOISE_FRAC * float(Q_up_true.max())
-        sigma_lat = NOISE_FRAC * float(Q_lat_true.max())
         sigma_h = NOISE_FRAC * float(h_true.max())
 
-        Q_up = np.maximum(Q_up_true + rng.normal(0.0, sigma_Q, N), 0.0)
-        Q_lat = np.maximum(Q_lat_true + rng.normal(0.0, sigma_lat, N), 0.0)
-        Q_down = np.maximum(Q_down_true + rng.normal(0.0, sigma_Q, N), 0.0)
+        Q_up_csv = np.maximum(Q_up_true + rng.normal(0.0, sigma_Q, N), 0.0).round(3)
+        Q_down_csv = np.maximum(Q_down_true + rng.normal(0.0, sigma_Q, N), 0.0).round(3)
         h_out = np.maximum(h_true + rng.normal(0.0, sigma_h, N), 0.01)
-
-        Q_up_csv = Q_up.round(3)
-        Q_lat_csv = Q_lat.round(3)
-        Q_down_csv = Q_down.round(3)
     else:
         Q_up_csv = Q_up_true.round(3)
-        Q_lat_csv = Q_lat_true.round(3)
-        Q_down_csv = (Q_up_csv + Q_lat_csv).round(3)
+        Q_down_csv = Q_up_csv.copy()
         h_out = h_true
 
     df = pd.DataFrame({
         "datetime":           ts,
         "Q_upstream_m3s":     Q_up_csv,
-        "q_lat_m3s":          Q_lat_csv,
         "Q_downstream_m3s":   Q_down_csv,
         "h_outlet_m":         h_out.round(4),
     })
