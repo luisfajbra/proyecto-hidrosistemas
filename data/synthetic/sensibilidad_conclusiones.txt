@@ -1,15 +1,15 @@
 === Sensibilidad global (Sobol) ===
-Metrica: Y=1-NSE | evaluaciones: 768 | N_JOBS: 3
-Umbral poco sensible: ST < 10% de max(ST) = 0.0000
+Metrica: Y=0.5*(1-NSE_up)+0.5*(1-NSE_dn) | evaluaciones: 768 | N_JOBS: 3
+Umbral poco sensible: ST < 10% de max(ST) = 0.0520
 
-  n: ST=nan +/- nan  S1=nan  -> poco sensible
-  S0: ST=nan +/- nan  S1=nan  -> poco sensible
-  alpha_Qup: ST=nan +/- nan  S1=nan  -> poco sensible
-  q_lat: ST=nan +/- nan  S1=nan  -> poco sensible
+  eta_Q: ST=0.5203 +/- 0.4068  S1=0.4092  -> INFLUYENTE
+  S0: ST=0.4163 +/- 0.4287  S1=0.0000  -> INFLUYENTE
+  n: ST=0.2081 +/- 0.2968  S1=0.0000  -> INFLUYENTE
+  B_W: ST=0.1041 +/- 0.1856  S1=0.0070  -> INFLUYENTE
 
 Para calibracion (Parte 3): priorizar parametros INFLUYENTES;
 fijar o acotar fuerte los poco sensibles.
 
-Nota alpha_Qup: si ST(alpha) es bajo, la incertidumbre del aforo no domina
-la respuesta del modelo — el error de medición es tolerable para la calibración.
-Si ST(alpha) es alto, considerar calibración conjunta con n y S0.
+Nota eta_Q: ST alto indica que la incertidumbre del aforo aguas arriba
+condiciona el ajuste; si ST es bajo, fijar eta_Q=1 en calibracion (Parte 3).
+Salida: Q_downstream del CSV frente a simulacion en x = L.
