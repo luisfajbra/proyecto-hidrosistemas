@@ -1,0 +1,515 @@
+================================================================================
+GUIA DEL PROYECTO — Saint-Venant 1D (ICYA 4715)
+================================================================================
+Estado del repositorio: configuracion ACTUAL (mayo 2026).
+Un solo documento de referencia: datos, parametros, sensibilidad, calibracion,
+correlaciones y que fijar. No sustituye el PDF del curso ni model.py.
+
+################################################################################
+# 1. QUE ES ESTE PROYECTO
+################################################################################
+
+Modelo 1D Saint-Venant (canal rectangular) calibrado con datos sinteticos CSV.
+Pipeline por partes:
+
+  01_model_verification.ipynb  — Verificar solver + CSV (no calibrar)
+  02_sensitivity.ipynb         — Sensibilidad global Sobol (Parte 2 PDF)
+  03_calibration.ipynb         — Monte Carlo + GLUE + futuro CMA-ES (Parte 3)
+  04_pinn.ipynb                — Pendiente (Parte 4)
+
+Codigo nucleo:
+  src/model.py           — saint_venant_1d (NO modificar salvo acuerdo)
+  data/sinteticos.py     — Genera CSV en data/synthetic/
+  src/sensitivity.py — UNICO modulo Parte 2 (metricas, Sobol, OLS, figuras, simulador)
+  src/calibration_plots.py   — MC, GLUE, RSA/dotty (Parte 3)
+
+
+################################################################################
+# 2. DATOS: NO HAY BASE DE DATOS EXTERNA
+################################################################################
+
+Todo entra desde archivos CSV en data/synthetic/, generados con:
+
+  python data/sinteticos.py
+
+NO se usa PostgreSQL, Access ni API. El "reemplazo por datos reales" es
+cambiar el CSV manteniendo las mismas columnas.
+
+Archivos principales
+--------------------
+  series_corta_balance.csv   — DEFAULT (500 filas, 15 min, sin ruido)
+  series_corta_ruido.csv     — Igual con ruido gaussiano en mediciones
+  series_larga_balance.csv   — ~20 anos (analisis final)
+  series_larga_ruido.csv
+  batimetria.csv             — Perfiles 2D del lecho (independiente del 1D)
+
+Columnas del CSV de series (las que usan 02 y 03)
+-------------------------------------------------
+  datetime
+  Q_upstream_m3s     — Hidrograma aguas arriba (forzante de referencia)
+  q_lat_m3s          — Aporte lateral agregado del tramo [m3/s]
+  Q_downstream_m3s   — Caudal "observado" aguas abajo (objetivo del ajuste)
+  h_outlet_m         — Tirante en salida (observacion auxiliar / verificacion)
+
+Valores verdaderos del generador (sinteticos.py), para comparar:
+  N_MANN = 0.035,  S0 = 0.001,  B_W = 50 m,  Q0 = 50 m3/s
+
+Se lee el CSV COMPLETO para:
+  - Vector de tiempos t_sec
+  - Serie Q_upstream_m3s (forzante aguas arriba, paso a paso)
+  - Observacion Q_downstream_m3s
+En Sobol / MC / GLUE (02 y 03):
+  - Aguas arriba: eta_Q * Q_upstream_CSV(t)
+  - Salida: Q_downstream_m3s del CSV frente a Q simulado en x = L (solver 1D).
+  - El solver en 02/03 no incluye aporte lateral; la columna del CSV puede no
+    coincidir con la salida SV → NSE en salida no cercano a 1 (ver seccion 4).
+  Ver seccion 4.
+
+
+################################################################################
+# 3. PARTICION TEMPORAL (IGUAL EN 02 Y 03)
+################################################################################
+
+Sobre series_corta_balance.csv (~500 filas) o serie larga tras submuestreo
+(default_runtime_plan: stride + max_nt; ver seccion 5):
+
+  Warm-up     : primeros 3600 s (1 h) — arranque del solver, NO entra en metricas
+  Calibracion : 60 % de los pasos POST warm-up  (~297 filas)
+  Validacion  : 30 % siguiente                  (~148 filas)
+  Sobol (Y)   : TODO el periodo POST warm-up (no solo cal)
+
+Banderas en notebooks: CAL_FRAC=0.60, VAL_FRAC=0.30, WARMUP_SECONDS=3600.
+
+Calibracion / MC / GLUE (03):
+  - Objetivo principal: KGE en mascara CALIBRACION
+  - GLUE e hidrogramas: bandas post warm-up para comparar con Q_obs
+
+Sensibilidad (02):
+  - Y = 0.5*(1-NSE_up) + 0.5*(1-NSE_dn) en post warm-up (dos hidrogramas)
+  - OLS: residuales apilados aguas arriba + salida en CALIBRACION
+
+
+################################################################################
+# 4. PARAMETROS ACTUALES (VECTOR theta) — notebook 02 y 03 alineados
+################################################################################
+
+Calibrables / sensibles (4 parametros)
+--------------------------------------
+  n          — Rugosidad Manning
+  S0         — Pendiente de fondo
+  B_W        — Ancho del canal prismático [m]
+  eta_Q      — Factor de escala del aforo aguas arriba [-]
+               q_upstream(t) = eta_Q * Q_upstream_CSV(t)
+
+Rangos Sobol / MC (uniformes)
+-----------------------------
+  n      : [0.01, 0.06]           verdadero 0.035 (Chow 1959)
+  S0     : [0.0001, 0.005]        verdadero 0.001
+  B_W    : [0.6*B_ref, 1.4*B_ref] acotado [20, 100] m; ref = sinteticos.B_W
+  eta_Q  : [1 - k*sigma/mu, 1 + k*sigma/mu]  k=2 (ETA_K_SIGMA); sigma, mu de
+           Q_upstream en periodo calibracion del CSV; verdadero 1.0
+
+Llamada al modelo (02 y 03)
+---------------------------
+  simulate_discharge_upstream_downstream / TwoStationSimulator:
+      saint_venant_1d([n, S0, B_W], ...,
+          q_upstream = eta_Q * Q_upstream_CSV,
+      return_full=True internamente)
+  Q_sim_up = Q(t, x=0),  Q_sim_dn = Q(t, x=L)
+Por que eta_Q (y no Q_up constante)
+---------------------------------
+  Q_up escalar destruye la forma del hidrograma. eta_Q representa error
+  sistematico de aforo; la variabilidad temporal la lleva el CSV.
+
+NSE en celda de verificacion del 02 — que esperar
+--------------------------------------------------
+  Aguas arriba: NSE alto con eta_Q = 1 (el borde reproduce la serie del CSV).
+  Salida: Q_downstream del CSV no es la salida del solver 1D tal como esta
+  armado el experimento → NSE en salida suele ser negativo o moderado, no 1.
+  Eso no invalida Sobol: mide sensibilidad del desajuste definido en el PDF.
+
+PARRAFO LISTO PARA INFORME (Metodos)
+------------------------------------
+  "Se calibraron n, S0, B_W y eta_Q. Aguas arriba: eta_Q * Q_upstream del CSV.
+  Salida: Q_downstream del CSV vs simulación en x = L. Distribución uniforme.
+  Objetivo mixto aguas arriba + salida (Sobol, OLS, MC/GLUE)."
+
+
+################################################################################
+# 5. PARTE 2 — SENSIBILIDAD (02_sensitivity.ipynb)
+################################################################################
+
+Estructura del notebook (flujo; numero de celdas puede variar)
+----------------------------------------------------------------
+  Toda la programacion de Parte 2 vive en **src/sensitivity.py** (un solo modulo).
+  El notebook solo: banderas, `_PLAN = default_runtime_plan(...)`,
+  `CTX = build_sensitivity_context(..., subsample_stride, max_nt)`, llamadas a
+  `run_sobol_pipeline`, `write_sobol_conclusions`, `run_ols_bundle` (si RUN_COMPLEMENTO),
+  profiling opcional, y `display` / figuras del modulo.
+
+  Orden logico:
+  0  Intro markdown
+  1  Config: USE_LONG_SERIES, INFORME, plan de tiempos, CTX
+  2  Verificacion metricas con PARAMS_TRUE
+  3-4  Justificacion y metodo Sobol (markdown)
+  5  Sobol: evaluacion paralela + analisis + figura (en sensitivity)
+  6  Conclusiones ST -> sensibilidad_conclusiones.txt
+  7  Complemento OLS (una celda; internamente IC, bootstrap, SSC, suposiciones, figuras)
+  8  Profiling opcional (ydata_profiling)
+
+Metodo
+------
+  Sobol global (SALib): S1 y ST con intervalos de confianza (conf_level=0.95).
+  Paralelo: joblib Parallel, backend loky, N_JOBS = n_cpus - 1.
+
+Metrica escalar Y (por defecto)
+-------------------------------
+  Y = 0.5*(1-NSE_up) + 0.5*(1-NSE_dn) en post warm-up
+  (aguas arriba: Q_upstream CSV; salida: Q_downstream CSV vs Q_sim en x=L)
+
+Cuantas simulaciones y tiempo
+-----------------------------
+  Tiempos (ver default_runtime_plan en sensitivity.py):
+    corta + rapido:     SOBOL_N=128,   nt=500,     ~768 eval   (~15-45 min)
+    corta + informe:    SOBOL_N=512,   OLS+SSC    ~3072 eval  (~1-3 h)
+    larga + rapido:     stride=24, max_nt=3000, SOBOL_N=64  (~384 eval)
+    larga + informe:    stride=12, max_nt=6000, SOBOL_N=256 (~1536 eval, horas no dias)
+  Ajuste manual: SUBSAMPLE_STRIDE, MAX_NT, SOBOL_N en celda 1 del 02.
+  Con N_JOBS~7: prueba ~10-25 min; informe ~2-4 h (orden de magnitud)
+
+Resultado de sensibilidad (que interpretar)
+-------------------------------------------
+  Tabla y figura: S1, ST por parametro (n, S0, B_W, eta_Q).
+  Archivos:
+    figures/sobol_indices.png
+    data/synthetic/sobol_indices.csv
+    data/synthetic/sensibilidad_conclusiones.txt
+    data/synthetic/sobol_ejecucion.csv
+
+  Clasificacion (celda conclusiones):
+    INFLUYENTE     : ST >= ST_UMBRAL_REL * max(ST) (default 10 %)
+    poco sensible  : ST por debajo del umbral -> candidato a FIJAR en Parte 3
+
+  Orden esperado: n y S0 dominantes; B_W segun geometria; eta_Q segun CV del aforo.
+  sensibilidad_conclusiones.txt incluye nota sobre ST(eta_Q).
+
+  NOTA: Si data/synthetic/sobol_indices.csv tiene NaN o solo 3 nombres,
+  esta DESACTUALIZADO. Re-ejecutar notebook 02 tras cambios de parametros.
+
+Complemento OLS (RUN_COMPLEMENTO=True; plan informe corta/larga)
+----------------------------------------------------------------
+  No sustituye Sobol. Residuales apilados aguas arriba + salida en CALIBRACION.
+  Entrega:
+    - Valores OLS vs referencia
+    - cond(J'J) — si >> 10^3 hay equifinalidad / parametros mal identificados
+    - Matriz de CORRELACION entre parametros OLS -> figures/correlacion_parametros.png
+    - 5 suposiciones del error (sup01-sup05)
+    - SSC: sensibilidad local en el tiempo -> figures/ssc_hidrograma.png
+    - IC/IP hidrograma OLS -> figures/intervalos_confianza_prediccion.png
+
+  Archivos:
+    data/synthetic/parametros_ols_sensibilidad.csv
+    data/synthetic/metricas_ols_cal_val.csv
+    data/synthetic/suposiciones_errores.txt
+
+LO QUE NO VA EN PARTE 2
+-----------------------
+  Monte Carlo masivo y filtro GLUE -> notebook 03 (Parte 3).
+  (Referencia de graficos: d:\descagas\MonteCarlo - Copy.ipynb)
+
+
+################################################################################
+# 6. PARTE 3 — CALIBRACION E INCERTIDUMBRE (03_calibration.ipynb)
+################################################################################
+
+Metodo actual implementado
+--------------------------
+  3a Calibracion optima: PENDIENTE (CMA-ES / PSO / DDS maximizando KGE)
+  3b Incertidumbre: Monte Carlo + GLUE
+
+Datos y parametros
+------------------
+  Mismo CSV (y mismos subsample_stride / max_nt si se copian del 02), vector
+  n, S0, B_W, eta_Q. TwoStationSimulator: eta_Q * Q_upstream, sin lateral en 03.
+
+Monte Carlo exploratorio
+------------------------
+  Sorteo uniforme de theta en los rangos.
+  MC_N = 200 (FAST=True) o 50_000 (FAST=False)
+  Para cada muestra: KGE en periodo de CALIBRACION.
+  Salida: data/synthetic/monte_carlo_resumen.csv
+          figures/monte_carlo_kge_hist.png
+
+Diagramas de dispersion (estilo MonteCarlo - Copy.ipynb)
+--------------------------------------------------------
+  Tras MC:
+    scatter_param_vs_objetivo_todas.png      — parametro vs (1-KGE)
+    scatter_param_vs_objetivo_conductuales.png — solo KGE >= umbral GLUE
+    scatter_Qsim_vs_Qobs_mejor_MC.png        — 1:1 mejor sorteo
+
+GLUE
+----
+  Conjuntos conductuales: simulaciones con KGE_cal >= GLUE_KGE_MIN (default 0.5).
+  Se simulan hidrogramas de todos los conductuales.
+  Bandas 5-95 % en cada instante (post warm-up).
+  Salidas:
+    data/synthetic/glue_parametros_aceptados.csv
+    data/synthetic/glue_envelope_xL.csv
+    figures/glue_credibilidad_xL.png
+
+  Metrica de cobertura impresa: % de Q_obs dentro de la banda post warm-up.
+
+Diferencia Sobol (02) vs MC/GLUE (03)
+-------------------------------------
+  Sobol:   analisis de VARIANZA de Y; indices S1/ST; diseno Saltelli
+  MC/GLUE: muestreo aleatorio + filtro por desempeno; bandas de incertidumbre
+           predictiva; NO calcula indices Sobol
+
+Herramientas nuevas (calibration_plots.py) — analisis visual estilo curso
+--------------------------------------------------------------------------
+  plot_rsa_behavioral_cdfs(...) — curvas ECDF por quantiles de desempeno,
+    gradiente cool (cian–lila): desviacion fuerte respecto a la diagonal en
+    parametros identificables cuando se exigen mejores corridas.
+  plot_dotty_mc(...) — dispersion parametro vs NSE (monocromo), juicio rapido
+    de regiones que alcanzan alto desempeno.
+
+
+################################################################################
+# 6.1 LINEAMIENTO DOCENTE — dos hidrogramas, parametros n S0 B_W, error en Q
+################################################################################
+
+Que pidio el profesor (resumen)
+---------------------------------
+  1. Trabajar con DOS series de caudal: una aguas arriba y otra cerca de la
+     salida; la condicion de frontera en el codigo actual ya usa tirante normal
+     de Manning ligado al Q prescrito en el borde ver src/model.py MacCormack).
+  2. Calibrar para acercar parametros a valores de referencia ("verdad" o
+     diseno) y, segun correlacion entre parametros o sensibilidades locales
+     pareadas, FIJAR algunos y dejar libres los identificables.
+  3. Vector de sensibilidad sugerido: n, S0, B_W mas la incertidumbre del caudal
+     de ingreso Q, con rango derivado de la varianza (o dispersión) de los
+     datos observados de entrada — en la practica suele modelarse como factor
+     escalar o ruido correlado con desviación típica proporcional a sigma_Q.
+
+Como obtener los dos hidrogramas SIN tocar model.py
+----------------------------------------------------
+  saint_venant_1d(..., return_full=True) devuelve el historial Q[t, i] en todas
+  las secciones. Use src/sensitivity.simulate_discharge_upstream_downstream
+    o CTX.simulator.both(theta):
+  devuelve Q(t) en columna 0 (entrada) y en la ultima columna (salida util).
+
+  IMPLEMENTADO en 02/03: objetivo mixto 0.5*(1-NSE_up)+0.5*(1-NSE_dn) con
+    Q_obs aguas arriba = Q_upstream del CSV y eta_Q escalando el forzante.
+    Con eta_Q=1 y sin ruido en el CSV, NSE aguas arriba es ~1; la salida sigue
+    mal condicionada respecto al balance algebraico (ver abajo). Use
+    series_*_ruido.csv si quiere sensibilidad no trivial en eta_Q.
+
+Por que el NSE puede ser negativo (y como evitarlo conceptualmente)
+--------------------------------------------------------------------
+  Hoy Q_downstream del CSV es balance algebraico Q_up + q_lat, no es Q_SV en x=L.
+  Cualquier objetivo NSE que compare eso frente a la simulación SV en la salida
+  queda mal condicionado → NSE negativo aun con "verdaderos" n, S0, B_W.
+
+  Opciones coherentes (elegir una y documentarla en el informe):
+    A) Cambiar el generador de datos para que Q_downstream_m3s salga de una
+       corrida de referencia Saint-Venant (requiere acuerdo para editar
+       data/sinteticos.py).
+    B) Calibrar sólo contra hidrogramas definidos por el propio modelo para un
+       conjunto de parametros de referencia ("sintético inverso").
+    C) Mantener el CSV actual pero cambiar el objetivo (p. ej. solo forma
+       relativa, RMSE normalizado, multivariable ponderado) y aceptar que NSE no
+       será ~1 con PARAMS_TRUE — ver seccion 136–148).
+
+Parametrizacion vigente (02/03, alineada con el profesor)
+---------------------------------------------------------
+  - Vector: n, S0, B_W, eta_Q (uniforme en rangos de seccion 4).
+  - Vector n, S0, B_W, eta_Q (sin termino lateral en el solver 02/03).
+  - eta_Q: rango 1 +/- k*sigma/mu desde el CSV en calibracion (sin tope 30 %).
+
+Sensibilidad local (curvas tipo imagen azul/rojo — SSC)
+------------------------------------------------------
+  La figura ssc_hidrograma.png (Parte 2, OLS / SSC) muestra dQ/dtheta en el tiempo.
+  Si dos curvas tienen forma casi identica durante todo el hidrograma, los
+  parametros suelen estar mal identificados de forma conjunta: conviene FIJAR
+  uno usando criterio fisico externo y dejar libre el otro (coherente con la
+  matriz de correlacion OLS).
+
+RSA y dotty (imagen rejilla cyan–lila e imagen B&N dispersion)
+--------------------------------------------------------------
+  Tras Monte Carlo, usar plot_rsa_behavioral_cdfs y plot_dotty_mc sobre las
+  mismas muestras y sobre NSE_cal (u otra métrica). Son complementarios al
+  Sobol global: muestran identificabilidad empirica bajo filtros por desempeno.
+
+
+
+################################################################################
+# 7. CORRELACION ENTRE PARAMETROS Y QUE FIJAR
+################################################################################
+
+Donde ver correlacion
+---------------------
+  Solo tras ejecutar 02 con INFORME=True:
+    figures/correlacion_parametros.png
+    (correlacion de errores estandar de los parametros OLS)
+
+  Tambien revisar:
+    cond(J'J) impreso en celda OLS
+    Si OLS empuja un parametro al borde del rango (ej. S0 -> 0.005)
+
+Correlaciones tipicas en modelos de canal
+-----------------------------------------
+  n  <->  S0           : compensan friccion y pendiente (muy comun)
+  eta_Q <-> n, S0  : escala del forzante vs friccion/pendiente
+  B_W <-> n, S0    : geometria vs resistencia y almacenamiento
+
+En corridas ANTIGUAS con B_w libre, OLS llevaba B_w ~ 80 m (limite superior):
+  sintoma de equifinalidad n-S0-B_w. Por eso B_w quedo FIJO en 50 m.
+
+Reglas para decidir que fijar
+-----------------------------
+  1. Ya fijo: B_w = 50 m (geometria prismática conocida).
+
+  2. Tras Sobol: fijar parametros con ST muy bajo (poco sensibles).
+
+  3. Tras OLS: si |corr| > ~0.9 entre dos parametros, fijar el mejor
+     sustentado por dato fisico:
+       - eta_Q = 1.0 fijo si confias plenamente en el aforo del CSV
+       - B_W fijo en valor de diseno si la batimetria lo confirma
+       - n y S0 casi siempre deben quedar libres
+
+  4. Si cond(J'J) enorme: reducir dimension (fijar 1-2 parametros) y recalibrar.
+
+  5. No fijar los 4: sin grados de libertad.
+
+Recomendacion operativa (hasta tener ST nuevos)
+-----------------------------------------------
+  Ejecutar 02 con INFORME=True.
+  Leer ST en sensibilidad_conclusiones.txt.
+  Leer correlacion_parametros.png.
+  Luego en 03 usar el mismo vector de parametros libres para MC/GLUE/CMA-ES.
+
+
+################################################################################
+# 8. FUNCIONES OBJETIVO (RESUMEN)
+################################################################################
+
+  NSE   : 1 - sum((obs-sim)^2)/sum((obs-mean)^2)   1=perfecto, puede ser <0
+  KGE   : balance correlacion, variabilidad y sesgo (maximo = 1)
+  OLS   : min RMSE en calibracion
+  Sobol : Y = 1-NSE (por defecto) en post warm-up — mayor Y = peor
+  GLUE  : aceptar si KGE_cal >= GLUE_KGE_MIN
+
+
+################################################################################
+# 9. SALIDAS POR CARPETA (ESTADO ACTUAL)
+################################################################################
+
+data/synthetic/
+  series_*.csv                    — Datos
+  sobol_indices.csv               — Parte 2 (regenerar)
+  sensibilidad_conclusiones.txt   — Parte 2 (regenerar)
+  sobol_ejecucion.csv
+  parametros_ols_sensibilidad.csv — Parte 2 OLS (regenerar)
+  metricas_ols_cal_val.csv
+  ssc_resumen.csv                 — Parte 2 SSC (INFORME=True)
+  suposiciones_errores.txt
+  monte_carlo_resumen.csv         — Parte 3
+  glue_envelope_xL.csv            — Parte 3
+  glue_parametros_aceptados.csv   — Parte 3
+
+figures/
+  sobol_indices.png               — Parte 2
+  correlacion_parametros.png      — Parte 2 OLS
+  sup01_ ... sup05_*.png          — Parte 2
+  intervalos_confianza_prediccion.png
+  ssc_hidrograma.png
+  monte_carlo_kge_hist.png         — Parte 3
+  scatter_param_vs_objetivo_*.png — Parte 3
+  glue_credibilidad_xL.png        — Parte 3
+
+reports/
+  profile_latest.html             — Parte 2 si RUN_PROFILING=True
+
+
+################################################################################
+# 10. ORDEN DE EJECUCION
+################################################################################
+
+  1. python data/sinteticos.py
+  2. notebooks/01_model_verification.ipynb
+  3. notebooks/02_sensitivity.ipynb
+       INFORME=False  — prueba rapida
+       INFORME=True   — Sobol + OLS + correlacion + suposiciones (informe)
+  4. notebooks/03_calibration.ipynb
+       FAST=False para MC/GLUE serios (50k sorteos si hay tiempo)
+
+Ante errores de import: Kernel -> Restart; entorno .venv con requirements.txt
+
+Archivos que NO se modifican en flujo normal:
+  src/model.py, data/sinteticos.py, 01_model_verification.ipynb (salvo acuerdo)
+
+
+################################################################################
+# 11. PREGUNTAS FRECUENTES (RESPUESTAS CORTAS)
+################################################################################
+
+P: Calibracion usa todo el CSV?
+R: Lee todas las filas. Q_upstream entra como serie completa escalada por
+   eta_Q. Objetivo MC/GLUE: KGE mixto aguas arriba + salida en calibracion.
+
+P: Por que el NSE es negativo con parametros verdaderos?
+R: Q_downstream del CSV = Q_up + q_lat (sinteticos); Q_sim = salida SV en x=L.
+   eta_Q escala la serie de entrada, pero no unifica esas dos
+   definiciones. NSE ~ -0.6 con PARAMS_TRUE es esperado (celda 3 del 02).
+
+P: Cual es el resultado de sensibilidad?
+R: Indices Sobol S1 y ST para n, S0, B_W, eta_Q.
+
+P: Parametros correlacionados?
+R: correlacion_parametros.png (INFORME=True). Esperable: n-S0, B_W-n, eta_Q-n.
+
+P: Hay que fijar alguno?
+R: B_w ya fijo. Tras Sobol/OLS, fijar los poco sensibles (ST bajo) o los
+   mal identificados (alta correlacion / borde de rango). Mantener n y S0 libres.
+
+P: Por que MC/GLUE no esta en 02?
+R: Por alineacion al PDF: sensibilidad global = Sobol (02);
+   incertidumbre Monte Carlo + GLUE = calibracion (03).
+
+================================================================================
+Fin GUIA_PROYECTO.txt — alineado con 02_sensitivity.ipynb (n,S0,B_W,eta_Q) y 03
+================================================================================
+
+################################################################################
+# APENDICE — ERRORES FRECUENTES (NOTEBOOK 02)
+################################################################################
+
+1) NSE negativo con parametros verdaderos (celda 3)
+   CAUSA principal: Q_obs = balance algebraico (Q_up + q_lat en sinteticos.py);
+   Q_sim = Saint-Venant en x=L — magnitudes y dinamica distintas (~50 vs ~103 m3/s).
+   CAUSA antigua (ya corregida): Q_up escalar sin serie del CSV.
+   NO esperar NSE ~ 1 en celda 3 con el CSV balance actual.
+   Si el informe exige NSE ~ 1: regenerar datos con Q_down = salida SV (tocar
+   sinteticos) o acordar otro objetivo de comparacion.
+
+2) time_seconds debe tener longitud nt=200; recibido 500
+   CAUSA: q_upstream escalar sin pasar nt=nt al solver.
+   SOLUCION: simulate_outlet debe incluir nt=nt (ya en version actual).
+
+3) Sobol parece colgado
+   CAUSA: 768+ simulaciones en serie o sin verbose.
+   SOLUCION: N_JOBS = n_cpus-1, verbose=5 en Parallel; esperar ~10-30 min (INFORME=False).
+
+4) Sobol S1/ST = NaN
+   CAUSA: Y constante o muchas corridas fallidas.
+   SOLUCION: revisar que simulate_outlet no falle; ejecutar 01; revisar rangos.
+
+5) ModuleNotFoundError: SALib
+   pip install -r requirements.txt
+
+6) MC/GLUE en notebook 02
+   Solo en 03_calibration.ipynb; imports desde src.calibration_plots.
+
+7) Windows y paralelismo
+   Si se cuelga: N_JOBS = 1 en celda config del 02.
+

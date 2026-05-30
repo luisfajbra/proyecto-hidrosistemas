@@ -1,0 +1,6 @@
+item,valor
+n_evaluaciones,768
+SOBOL_N,128
+SOBOL_METRIC,nse
+conf_level,0.95
+N_JOBS,3
