@@ -43,8 +43,8 @@ def load_sinteticos_module(project_root: Path) -> Any:
 
 def synthetic_csv_name(*, use_long_series: bool, use_noisy_csv: bool) -> str:
     if use_long_series:
-        return "series_larga_ruido.csv" if use_noisy_csv else "series_larga_balance.csv"
-    return "series_corta_ruido.csv" if use_noisy_csv else "series_corta_balance.csv"
+        return "series_larga_ruido.csv" if use_noisy_csv else "series_larga_shift.csv"
+    return "series_corta_ruido.csv" if use_noisy_csv else "series_corta_shift.csv"
 
 
 # ── Métricas ────────────────────────────────────────────────────────────────────
