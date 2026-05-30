@@ -51,7 +51,38 @@ def normal_depth(Q: np.ndarray) -> np.ndarray:
     return (Q * N_MANN / (B_W * np.sqrt(S0))) ** 0.6
 
 
-def _seasonal_factor(t_days: np.ndarray) -> np.ndarray: #Revisar 
+def _compute_travel_time(dt_min: float) -> tuple[int, float]:
+    """Tiempo de viaje cinemático: n_shift (pasos) y tau_s (segundos)."""
+    h0 = float(normal_depth(np.asarray([Q0]))[0])
+    A0 = B_W * h0
+    c_k = (5.0 / 3.0) * Q0 / A0   # celeridad cinemática [m/s]
+    tau_s = L / c_k                 # tiempo de viaje [s]
+    n_shift = max(1, round(tau_s / (dt_min * 60.0)))
+    return n_shift, tau_s
+
+
+def _shift_routing(Q_up: np.ndarray, n_shift: int) -> np.ndarray:
+    """Desfase puro: Q_down[t] = Q_up[t - n_shift]."""
+    Q_down = np.empty_like(Q_up)
+    Q_down[:n_shift] = Q_up[0]
+    Q_down[n_shift:] = Q_up[:-n_shift]
+    return Q_down
+
+
+def _muskingum_routing(Q_up: np.ndarray, tau_s: float, X: float, dt_s: float) -> np.ndarray:
+    """Tránsito Muskingum lineal con K=tau_s, parámetro de atenuación X, paso dt_s [s]."""
+    denom = 2.0 * tau_s * (1.0 - X) + dt_s
+    C0 = (dt_s - 2.0 * tau_s * X) / denom
+    C1 = (dt_s + 2.0 * tau_s * X) / denom
+    C2 = (2.0 * tau_s * (1.0 - X) - dt_s) / denom
+    Q_down = np.empty_like(Q_up)
+    Q_down[0] = Q_up[0]
+    for t in range(1, len(Q_up)):
+        Q_down[t] = C0 * Q_up[t] + C1 * Q_up[t - 1] + C2 * Q_down[t - 1]
+    return Q_down
+
+
+def _seasonal_factor(t_days: np.ndarray) -> np.ndarray: #Revisar
     """
     Ciclo estacional bimodal (Andes colombianos).
     Picos ≈ abril (día 100) y octubre (día 283); valles en enero y julio.
