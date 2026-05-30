@@ -223,8 +223,8 @@ def _integrate_maccormack(
 ):
     """Integracion interna; usada por saint_venant_1d y por scripts de verificacion."""
     n, S0, Q0, A_hyd, B_w = map(float, params)
-    dx = L / nx
     x = np.linspace(0.0, L, nx)
+    dx = float(x[1] - x[0])          # L/(nx-1), consistente con linspace
     if t_values is None:
         t_values = np.arange(nt, dtype=float) * float(dt)
     else:
@@ -256,57 +256,65 @@ def _integrate_maccormack(
         if k == nt - 1:
             break
 
-        h, _, _ = hydraulic_geometry(A, B_w)
-        celerity = np.sqrt(G * h)
-        velocity = Q / np.maximum(A, MIN_AREA)
-        max_wave_speed = np.max(np.abs(velocity) + celerity)
+        # Avanzar de t_values[k] a t_values[k+1] con multiples sub-pasos CFL.
+        # Un solo paso de dt_out viola la condicion CFL cuando dt_out >> dx/(|u|+c).
         dt_out = max(float(t_values[k + 1] - t_values[k]), 1e-12)
-        dt_step = min(dt_out, 0.9 * dx / max(max_wave_speed, 1e-12))
+        t_sub = 0.0
 
-        F_A = Q
-        F_Q = momentum_flux(Q, A, B_w, beta)
-        Sf = friction_slope(Q, A, B_w, n)
-        source_Q = G * A * (S0 - Sf)
+        while t_sub < dt_out - 1e-10:
+            h, _, _ = hydraulic_geometry(A, B_w)
+            celerity = np.sqrt(G * h)
+            velocity = Q / np.maximum(A, MIN_AREA)
+            max_wave_speed = np.max(np.abs(velocity) + celerity)
+            dt_step = min(dt_out - t_sub, 0.9 * dx / max(max_wave_speed, 1e-12))
 
-        A_pred = A.copy()
-        Q_pred = Q.copy()
-        A_pred[:-1] = A[:-1] - dt_step / dx * (F_A[1:] - F_A[:-1])
-        Q_pred[:-1] = Q[:-1] - dt_step / dx * (F_Q[1:] - F_Q[:-1]) + dt_step * source_Q[:-1]
+            t_next = t + t_sub + dt_step
 
-        q_up_next = _upstream_at_time(
-            t + dt_step, total_time, Q0, A_hyd, q_upstream, t_values
-        )
-        A_pred[0] = B_w * normal_depth(q_up_next, B_w, n, S0)
-        Q_pred[0] = q_up_next
-        A_pred[-1] = B_w * normal_depth(Q_pred[-2], B_w, n, S0)
-        Q_pred[-1] = Q_pred[-2]
+            F_A = Q
+            F_Q = momentum_flux(Q, A, B_w, beta)
+            Sf = friction_slope(Q, A, B_w, n)
+            source_Q = G * A * (S0 - Sf)
 
-        F_A_pred = Q_pred
-        F_Q_pred = momentum_flux(Q_pred, A_pred, B_w, beta)
-        Sf_pred = friction_slope(Q_pred, A_pred, B_w, n)
-        source_Q_pred = G * A_pred * (S0 - Sf_pred)
+            A_pred = A.copy()
+            Q_pred = Q.copy()
+            A_pred[:-1] = A[:-1] - dt_step / dx * (F_A[1:] - F_A[:-1])
+            Q_pred[:-1] = Q[:-1] - dt_step / dx * (F_Q[1:] - F_Q[:-1]) + dt_step * source_Q[:-1]
 
-        A_new = A.copy()
-        Q_new = Q.copy()
-        A_new[1:] = 0.5 * (
-            A[1:]
-            + A_pred[1:]
-            - dt_step / dx * (F_A_pred[1:] - F_A_pred[:-1])
-        )
-        Q_new[1:] = 0.5 * (
-            Q[1:]
-            + Q_pred[1:]
-            - dt_step / dx * (F_Q_pred[1:] - F_Q_pred[:-1])
-            + dt_step * source_Q_pred[1:]
-        )
+            q_up_next = _upstream_at_time(
+                t_next, total_time, Q0, A_hyd, q_upstream, t_values
+            )
+            A_pred[0] = B_w * normal_depth(q_up_next, B_w, n, S0)
+            Q_pred[0] = q_up_next
+            A_pred[-1] = B_w * normal_depth(Q_pred[-2], B_w, n, S0)
+            Q_pred[-1] = Q_pred[-2]
 
-        A_new = np.maximum(A_new, B_w * MIN_DEPTH)
-        A_new[0] = B_w * normal_depth(q_up_next, B_w, n, S0)
-        Q_new[0] = q_up_next
-        A_new[-1] = B_w * normal_depth(Q_new[-2], B_w, n, S0)
-        Q_new[-1] = Q_new[-2]
+            F_A_pred = Q_pred
+            F_Q_pred = momentum_flux(Q_pred, A_pred, B_w, beta)
+            Sf_pred = friction_slope(Q_pred, A_pred, B_w, n)
+            source_Q_pred = G * A_pred * (S0 - Sf_pred)
 
-        A, Q = A_new, Q_new
+            A_new = A.copy()
+            Q_new = Q.copy()
+            A_new[1:] = 0.5 * (
+                A[1:]
+                + A_pred[1:]
+                - dt_step / dx * (F_A_pred[1:] - F_A_pred[:-1])
+            )
+            Q_new[1:] = 0.5 * (
+                Q[1:]
+                + Q_pred[1:]
+                - dt_step / dx * (F_Q_pred[1:] - F_Q_pred[:-1])
+                + dt_step * source_Q_pred[1:]
+            )
+
+            A_new = np.maximum(A_new, B_w * MIN_DEPTH)
+            A_new[0] = B_w * normal_depth(q_up_next, B_w, n, S0)
+            Q_new[0] = q_up_next
+            A_new[-1] = B_w * normal_depth(Q_new[-2], B_w, n, S0)
+            Q_new[-1] = Q_new[-2]
+
+            A, Q = A_new, Q_new
+            t_sub += dt_step
 
     mass_residual = _mass_balance_residual(t_hist, A_hist, Q_hist, x)
 
