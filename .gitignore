@@ -21,3 +21,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Scripts de construcción temporales
+scripts/nb01_fix_*.py
