@@ -222,17 +222,13 @@ def generate_timeseries(
     dt_min: float = 15.0,
     n_steps: int | None = None,
     add_noise: bool = False,
+    routing: str = "shift",
 ) -> pd.DataFrame:
     """
-    Genera una serie de n_years años a resolución dt_min minutos.
-    Si n_steps se entrega, genera exactamente ese número de filas.
+    Genera una serie temporal con tránsito hidrológico correcto.
 
-    Flujo de generación:
-      Q_upstream = Q_downstream → Manning normal depth → h_outlet
-
-    Si add_noise=True, las señales reciben ruido gaussiano σ = 5 % del máximo
-    respectivo. Si add_noise=False, Q_downstream = Q_upstream después del
-    redondeo del CSV.
+    routing='shift'     — desfase puro (misma forma, llega n_shift pasos tarde)
+    routing='muskingum' — tránsito Muskingum K=tau_cin, X=0.1 (atenúa y retrasa)
 
     Columnas: datetime, Q_upstream_m3s, Q_downstream_m3s, h_outlet_m
     """
@@ -240,40 +236,45 @@ def generate_timeseries(
     start = pd.Timestamp(start_date)
     if n_steps is None:
         end = start + pd.DateOffset(years=n_years)
-        ts = pd.date_range(start, end, freq=freq, inclusive="left")
+        ts  = pd.date_range(start, end, freq=freq, inclusive="left")
     else:
         ts = pd.date_range(start, periods=n_steps, freq=freq)
-    N     = len(ts)
+    N = len(ts)
 
-    # Upstream
     Q_up_true = _build_upstream(N, dt_min, rng)
-    Q_down_true = Q_up_true.copy()
 
-    # Tirante en el outlet (Manning)
+    n_shift, tau_s = _compute_travel_time(dt_min)
+    dt_s = dt_min * 60.0
+    if routing == "shift":
+        Q_down_true = _shift_routing(Q_up_true, n_shift)
+    elif routing == "muskingum":
+        Q_down_true = _muskingum_routing(Q_up_true, tau_s, X=0.1, dt_s=dt_s)
+    else:
+        raise ValueError(f"routing debe ser 'shift' o 'muskingum', recibido: {routing!r}")
+
     h_true = normal_depth(Q_down_true)
 
     if add_noise:
         sigma_Q = NOISE_FRAC * float(Q_up_true.max())
         sigma_h = NOISE_FRAC * float(h_true.max())
-
-        Q_up_csv = np.maximum(Q_up_true + rng.normal(0.0, sigma_Q, N), 0.0).round(3)
+        Q_up_csv   = np.maximum(Q_up_true   + rng.normal(0.0, sigma_Q, N), 0.0).round(3)
         Q_down_csv = np.maximum(Q_down_true + rng.normal(0.0, sigma_Q, N), 0.0).round(3)
-        h_out = np.maximum(h_true + rng.normal(0.0, sigma_h, N), 0.01)
+        h_out      = np.maximum(h_true      + rng.normal(0.0, sigma_h, N), 0.01)
     else:
-        Q_up_csv = Q_up_true.round(3)
-        Q_down_csv = Q_up_csv.copy()
-        h_out = h_true
+        Q_up_csv   = Q_up_true.round(3)
+        Q_down_csv = Q_down_true.round(3)
+        h_out      = h_true
 
     df = pd.DataFrame({
-        "datetime":           ts,
-        "Q_upstream_m3s":     Q_up_csv,
-        "Q_downstream_m3s":   Q_down_csv,
-        "h_outlet_m":         h_out.round(4),
+        "datetime":         ts,
+        "Q_upstream_m3s":   Q_up_csv,
+        "Q_downstream_m3s": Q_down_csv,
+        "h_outlet_m":       h_out.round(4),
     })
 
     path = output_dir / filename
     df.to_csv(path, index=False)
-    print(f"  Guardado: {path}  ({len(df):,} filas × {len(df.columns)} columnas)")
+    print(f"  Guardado: {path}  ({len(df):,} filas x {len(df.columns)} columnas)")
     return df
 
 
