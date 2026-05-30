@@ -1,12 +1,13 @@
 """
 Generación de datos sintéticos — Proyecto Saint-Venant 1D (ICYA 4715)
 
-Produce cinco archivos en data/synthetic/:
-  batimetria.csv                — perfiles transversales del lecho
-  series_corta_balance.csv      — 500 filas, balance exacto de caudales
-  series_corta_ruido.csv        — 500 filas, mediciones con ruido gaussiano
-  series_larga_balance.csv      — 20 años, balance exacto de caudales
-  series_larga_ruido.csv        — 20 años, mediciones con ruido gaussiano
+Produce seis archivos de series en data/synthetic/ (más batimetria.csv):
+  series_corta_shift.csv     — 500 pasos, desfase puro, sin ruido
+  series_corta_muskingum.csv — 500 pasos, tránsito Muskingum X=0.1, sin ruido
+  series_corta_ruido.csv     — 500 pasos, Muskingum + ruido gaussiano 5%
+  series_larga_shift.csv     — 200 000 pasos, desfase puro, sin ruido
+  series_larga_muskingum.csv — 200 000 pasos, Muskingum X=0.1, sin ruido
+  series_larga_ruido.csv     — 200 000 pasos, Muskingum + ruido gaussiano 5%
 
 Usar las series cortas para desarrollar y validar el pipeline; escalar a las
 series largas para el análisis final. Todas tienen las mismas columnas que los
@@ -282,54 +283,76 @@ def generate_timeseries(
 
 def generate(output_dir: str = "data/synthetic") -> None:
     """
-    Genera todos los archivos de datos sintéticos.
+    Genera todos los archivos de datos sintéticos (batimetría + 6 series).
 
-    Cada componente usa su propia secuencia de semilla derivada de SEED=42,
-    por lo que son independientes entre sí (cambiar la batimetría no afecta
-    las series temporales y viceversa).
+    Series corta (500 pasos, dt=15 min ~ 5.2 días):
+      series_corta_shift.csv     — desfase puro, sin ruido
+      series_corta_muskingum.csv — tránsito Muskingum X=0.1, sin ruido
+      series_corta_ruido.csv     — tránsito Muskingum + ruido gaussiano 5%
+
+    Series larga (200 000 pasos, dt=15 min ~ 5.7 años):
+      series_larga_shift.csv     — desfase puro, sin ruido
+      series_larga_muskingum.csv — tránsito Muskingum X=0.1, sin ruido
+      series_larga_ruido.csv     — tránsito Muskingum + ruido gaussiano 5%
+
+    Shift y Muskingum de la misma longitud usan la misma semilla →
+    Q_upstream idéntico, Q_downstream diferente (solo varía el método de tránsito).
     """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    # Semillas hijas independientes y reproducibles
     master = np.random.SeedSequence(SEED)
-    s_bathy, s_corta_balance, s_corta_ruido, s_larga_balance, s_larga_ruido = master.spawn(5)
+    s_bathy, s_corta_clean, s_larga_clean, s_corta_ruido, s_larga_ruido = master.spawn(5)
 
     print("--- Batimetria (secciones transversales cada 250 m) ---")
     generate_bathymetry(np.random.default_rng(s_bathy), out)
 
-    print(f"--- Serie corta balance ({SHORT_SERIES_STEPS} filas - 15 min - 2022-01-01) ---")
+    print(f"\n--- Serie corta shift ({SHORT_SERIES_STEPS} filas - 15 min - 2022-01-01) ---")
     generate_timeseries(
         n_years=1, start_date="2022-01-01",
-        rng=np.random.default_rng(s_corta_balance),
-        output_dir=out, filename="series_corta_balance.csv",
-        n_steps=SHORT_SERIES_STEPS,
-        add_noise=False,
+        rng=np.random.default_rng(s_corta_clean),
+        output_dir=out, filename="series_corta_shift.csv",
+        n_steps=SHORT_SERIES_STEPS, add_noise=False, routing="shift",
     )
 
-    print(f"--- Serie corta ruido ({SHORT_SERIES_STEPS} filas - 15 min - 2022-01-01) ---")
+    print(f"\n--- Serie corta Muskingum ({SHORT_SERIES_STEPS} filas - 15 min - 2022-01-01) ---")
+    generate_timeseries(
+        n_years=1, start_date="2022-01-01",
+        rng=np.random.default_rng(s_corta_clean),
+        output_dir=out, filename="series_corta_muskingum.csv",
+        n_steps=SHORT_SERIES_STEPS, add_noise=False, routing="muskingum",
+    )
+
+    print(f"\n--- Serie corta ruido ({SHORT_SERIES_STEPS} filas - 15 min - 2022-01-01) ---")
     generate_timeseries(
         n_years=1, start_date="2022-01-01",
         rng=np.random.default_rng(s_corta_ruido),
         output_dir=out, filename="series_corta_ruido.csv",
-        n_steps=SHORT_SERIES_STEPS,
-        add_noise=True,
+        n_steps=SHORT_SERIES_STEPS, add_noise=True, routing="muskingum",
     )
 
-    print("--- Serie larga balance (20 anios - 15 min - 2000-01-01) ---")
+    print("\n--- Serie larga shift (200 000 filas - 15 min - 2000-01-01) ---")
     generate_timeseries(
         n_years=20, start_date="2000-01-01",
-        rng=np.random.default_rng(s_larga_balance),
-        output_dir=out, filename="series_larga_balance.csv",
-        add_noise=False,
+        rng=np.random.default_rng(s_larga_clean),
+        output_dir=out, filename="series_larga_shift.csv",
+        n_steps=200_000, add_noise=False, routing="shift",
     )
 
-    print("--- Serie larga ruido (20 anios - 15 min - 2000-01-01) ---")
+    print("\n--- Serie larga Muskingum (200 000 filas - 15 min - 2000-01-01) ---")
+    generate_timeseries(
+        n_years=20, start_date="2000-01-01",
+        rng=np.random.default_rng(s_larga_clean),
+        output_dir=out, filename="series_larga_muskingum.csv",
+        n_steps=200_000, add_noise=False, routing="muskingum",
+    )
+
+    print("\n--- Serie larga ruido (200 000 filas - 15 min - 2000-01-01) ---")
     generate_timeseries(
         n_years=20, start_date="2000-01-01",
         rng=np.random.default_rng(s_larga_ruido),
         output_dir=out, filename="series_larga_ruido.csv",
-        add_noise=True,
+        n_steps=200_000, add_noise=True, routing="muskingum",
     )
 
     print(f"\nListo. Archivos en: {out.resolve()}")
