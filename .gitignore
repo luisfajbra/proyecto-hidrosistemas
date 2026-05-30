@@ -24,3 +24,6 @@ Thumbs.db
 
 # Scripts de construcción temporales
 scripts/nb01_fix_*.py
+
+# Worktrees aislados
+.worktrees/
