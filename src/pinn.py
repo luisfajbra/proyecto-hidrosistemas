@@ -166,6 +166,7 @@ def train(
     lambda_pde: float = 0.05,
     n_epochs_adam: int = 5000,
     n_epochs_warmup: int = 0,
+    n_epochs_ramp: int = 0,
     n_iter_lbfgs: int = 500,
     n_colloc: int = 2000,
     resample_every: int = 1000,
@@ -179,8 +180,8 @@ def train(
     t_data:  tiempos [s],              shape (nt,)
     L, T:    longitud del canal [m] y duración [s]
     n_epochs_warmup: épocas iniciales con lambda_pde=0 (solo ajuste de datos).
-                     Permite que la red aprenda la variación temporal antes de
-                     introducir la restricción física.
+    n_epochs_ramp:   épocas para subir lambda_pde linealmente de 0 al valor final.
+                     Previene el spike de gradiente al activar la física abruptamente.
     """
     x0_data = x0_data.float()
     xL_data = xL_data.float()
@@ -230,14 +231,23 @@ def train(
         if epoch > 0 and epoch % resample_every == 0:
             x_c, t_c = _sample_colloc(seed=epoch)
 
-        # Curriculum: primeras n_epochs_warmup épocas sin física
-        lp_current = 0.0 if epoch < n_epochs_warmup else lambda_pde
-        if epoch == n_epochs_warmup and n_epochs_warmup > 0:
-            print(f"[Adam {epoch:5d}] ** Activando L_pde (lambda={lambda_pde}) **")
+        # Curriculum 3 fases: sin física → ramp lineal → física completa
+        if epoch < n_epochs_warmup:
+            lp_current = 0.0
+        elif epoch < n_epochs_warmup + n_epochs_ramp:
+            progress = (epoch - n_epochs_warmup) / max(n_epochs_ramp, 1)
+            lp_current = lambda_pde * progress
+            if epoch == n_epochs_warmup:
+                print(f"[Adam {epoch:5d}] ** Ramp L_pde: 0 -> {lambda_pde} en {n_epochs_ramp} epocas **")
+        else:
+            lp_current = lambda_pde
+            if epoch == n_epochs_warmup + n_epochs_ramp and n_epochs_ramp > 0:
+                print(f"[Adam {epoch:5d}] ** L_pde completo (lambda={lambda_pde}) **")
 
         optimizer.zero_grad()
         l_total, l_data, l_pde = _compute_loss(x_c, t_c, lp=lp_current)
         l_total.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
         if epoch % verbose_every == 0 or epoch == n_epochs_adam - 1:
