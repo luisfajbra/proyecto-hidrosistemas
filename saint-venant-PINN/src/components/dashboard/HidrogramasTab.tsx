@@ -26,10 +26,8 @@ export function HidrogramasTab() {
 
   return (
     <div className="flex flex-col gap-6 pt-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Hidrogramas sintéticos
-        </h2>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-1.5">
+        <p className="text-[13px] font-normal text-muted-foreground">Hidrogramas sintéticos</p>
         <DatasetSelector
           length={length}
           type={type}
@@ -39,7 +37,7 @@ export function HidrogramasTab() {
       </div>
 
       {loading ? (
-        <Skeleton className="h-[400px] rounded-lg" />
+        <Skeleton className="h-[400px]" />
       ) : error ? (
         <p className="text-sm text-destructive">{error}</p>
       ) : data ? (

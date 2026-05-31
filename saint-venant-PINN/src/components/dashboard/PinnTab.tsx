@@ -1,11 +1,5 @@
-import { useEffect, useState } from "react"
+import { Fragment, useEffect, useState } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableRow,
-} from "@/components/ui/table"
 import { MetricCard } from "@/components/MetricCard"
 import { LossCurveChart } from "@/components/charts/LossCurveChart"
 import { HydrographPINNChart } from "@/components/charts/HydrographPINNChart"
@@ -29,9 +23,17 @@ const CONFIG_ROWS: { label: string; value: string | number }[] = [
 
 const PENDING_LABEL = "Pendiente — ejecutar notebook 04"
 
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="mb-4 border-b pb-1.5 text-[13px] font-normal text-muted-foreground">
+      {children}
+    </p>
+  )
+}
+
 function PendingPlaceholder() {
   return (
-    <div className="flex h-[360px] items-center justify-center rounded-lg border border-dashed">
+    <div className="flex h-[360px] items-center justify-center border border-dashed">
       <p className="text-sm text-muted-foreground">{PENDING_LABEL}</p>
     </div>
   )
@@ -47,28 +49,19 @@ export function PinnTab() {
   }, [])
 
   return (
-    <div className="flex flex-col gap-6 pt-6">
+    <div className="flex flex-col gap-8 pt-6">
       <section>
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Configuración del modelo
-        </h2>
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <div className="rounded-md border">
-            <Table>
-              <TableBody>
-                {CONFIG_ROWS.map((r) => (
-                  <TableRow key={r.label}>
-                    <TableCell className="text-muted-foreground">{r.label}</TableCell>
-                    <TableCell className="text-right font-mono font-medium">
-                      {r.value}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4 content-start">
+        <SectionLabel>Configuración del modelo</SectionLabel>
+        <div className="grid grid-cols-1 gap-10 lg:grid-cols-[1fr_240px]">
+          <dl className="grid grid-cols-[1fr_auto] gap-x-10 gap-y-1.5">
+            {CONFIG_ROWS.map((r) => (
+              <Fragment key={r.label}>
+                <dt className="text-[13px] text-muted-foreground">{r.label}</dt>
+                <dd className="text-right font-mono text-[13px]">{r.value}</dd>
+              </Fragment>
+            ))}
+          </dl>
+          <div className="flex flex-col gap-6">
             <MetricCard label="n verdadero" value={TRUE_PARAMS.n} />
             <MetricCard label="B_w verdadero" value={TRUE_PARAMS.B_w} unit="m" />
             <MetricCard label="S₀ verdadero" value={TRUE_PARAMS.S0} />
@@ -78,11 +71,9 @@ export function PinnTab() {
       </section>
 
       <section>
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Curva de pérdidas — fase Adam
-        </h2>
+        <SectionLabel>Curva de pérdidas — fase Adam</SectionLabel>
         {lossData === undefined ? (
-          <Skeleton className="h-[360px] rounded-lg" />
+          <Skeleton className="h-[360px]" />
         ) : lossData === null ? (
           <PendingPlaceholder />
         ) : (
@@ -91,11 +82,9 @@ export function PinnTab() {
       </section>
 
       <section>
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Hidrograma — Q_obs vs Q_PINN
-        </h2>
+        <SectionLabel>Hidrograma — Q_obs vs Q_PINN</SectionLabel>
         {hydroData === undefined ? (
-          <Skeleton className="h-[360px] rounded-lg" />
+          <Skeleton className="h-[360px]" />
         ) : hydroData === null ? (
           <PendingPlaceholder />
         ) : (

@@ -6,6 +6,14 @@ import { loadHydrograph, loadCalibrationMetrics } from "@/lib/data/loaders"
 import { TRUE_PARAMS } from "@/lib/data/static"
 import type { HydrographPoint, CalibrationMetric } from "@/lib/types"
 
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="mb-4 border-b pb-1.5 text-[13px] font-normal text-muted-foreground">
+      {children}
+    </p>
+  )
+}
+
 export function ResumenTab() {
   const [series, setSeries] = useState<HydrographPoint[] | null>(null)
   const [metrics, setMetrics] = useState<CalibrationMetric[] | null>(null)
@@ -16,12 +24,10 @@ export function ResumenTab() {
   }, [])
 
   return (
-    <div className="flex flex-col gap-6 pt-6">
+    <div className="flex flex-col gap-8 pt-6">
       <section>
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Parámetros verdaderos del canal
-        </h2>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+        <SectionLabel>Parámetros verdaderos del canal</SectionLabel>
+        <div className="grid grid-cols-5 gap-8">
           <MetricCard label="Manning n" value={TRUE_PARAMS.n} />
           <MetricCard label="Pendiente S₀" value={TRUE_PARAMS.S0} />
           <MetricCard label="Caudal base Q₀" value={TRUE_PARAMS.Q0} unit="m³/s" />
@@ -31,41 +37,47 @@ export function ResumenTab() {
       </section>
 
       <section>
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Métricas de calibración OLS
-        </h2>
+        <SectionLabel>Calibración OLS</SectionLabel>
         {metrics ? (
-          <div className="flex flex-col gap-4">
-            {metrics.map((m) => (
-              <div key={m.periodo} className="flex flex-col gap-2">
-                <p className="text-xs font-medium capitalize text-muted-foreground">
-                  {m.periodo}
-                </p>
-                <div className="grid grid-cols-3 gap-4">
-                  <MetricCard label="NSE" value={m.NSE.toFixed(3)} />
-                  <MetricCard label="KGE" value={m.KGE.toFixed(3)} />
-                  <MetricCard label="RMSE" value={m.RMSE_m3s.toFixed(2)} unit="m³/s" />
-                </div>
-              </div>
-            ))}
-          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b">
+                <th className="py-1.5 pr-8 text-left text-[11px] font-normal text-muted-foreground">
+                  Periodo
+                </th>
+                <th className="px-4 py-1.5 text-right text-[11px] font-normal text-muted-foreground">
+                  NSE
+                </th>
+                <th className="px-4 py-1.5 text-right text-[11px] font-normal text-muted-foreground">
+                  KGE
+                </th>
+                <th className="px-4 py-1.5 text-right text-[11px] font-normal text-muted-foreground">
+                  RMSE (m³/s)
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {metrics.map((m) => (
+                <tr key={m.periodo} className="border-b last:border-0">
+                  <td className="py-2 pr-8 capitalize text-muted-foreground">{m.periodo}</td>
+                  <td className="px-4 py-2 text-right font-mono tabular-nums">{m.NSE.toFixed(3)}</td>
+                  <td className="px-4 py-2 text-right font-mono tabular-nums">{m.KGE.toFixed(3)}</td>
+                  <td className="px-4 py-2 text-right font-mono tabular-nums">{m.RMSE_m3s.toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         ) : (
-          <div className="grid grid-cols-3 gap-4">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-24 rounded-lg" />
-            ))}
-          </div>
+          <Skeleton className="h-16" />
         )}
       </section>
 
       <section>
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Hidrograma — serie corta Muskingum
-        </h2>
+        <SectionLabel>Hidrograma — serie corta Muskingum</SectionLabel>
         {series ? (
           <HydrographChart data={series} />
         ) : (
-          <Skeleton className="h-[360px] rounded-lg" />
+          <Skeleton className="h-[360px]" />
         )}
       </section>
     </div>
