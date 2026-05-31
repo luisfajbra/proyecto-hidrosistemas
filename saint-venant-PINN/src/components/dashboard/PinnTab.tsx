@@ -42,8 +42,8 @@ export function PinnTab() {
   const [hydroData, setHydroData] = useState<PinnHydrographPoint[] | null | undefined>(undefined)
 
   useEffect(() => {
-    loadPinnLossHistory().then(setLossData)
-    loadPinnHydrograph().then(setHydroData)
+    loadPinnLossHistory().then(setLossData).catch(() => setLossData(null))
+    loadPinnHydrograph().then(setHydroData).catch(() => setHydroData(null))
   }, [])
 
   return (

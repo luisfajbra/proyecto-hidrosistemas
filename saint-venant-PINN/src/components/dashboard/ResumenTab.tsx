@@ -11,8 +11,8 @@ export function ResumenTab() {
   const [metrics, setMetrics] = useState<CalibrationMetric[] | null>(null)
 
   useEffect(() => {
-    loadHydrograph("corta", "muskingum").then(setSeries)
-    loadCalibrationMetrics().then(setMetrics)
+    loadHydrograph("corta", "muskingum").then(setSeries).catch(console.error)
+    loadCalibrationMetrics().then(setMetrics).catch(console.error)
   }, [])
 
   return (

@@ -13,13 +13,15 @@ export function HidrogramasTab() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
     setData(null)
     setError(null)
     loadHydrograph(length, type)
-      .then(setData)
-      .catch(() => setError("No se pudo cargar la serie seleccionada."))
-      .finally(() => setLoading(false))
+      .then((d) => { if (!cancelled) setData(d) })
+      .catch(() => { if (!cancelled) setError("No se pudo cargar la serie seleccionada.") })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [length, type])
 
   return (

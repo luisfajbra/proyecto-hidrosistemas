@@ -20,8 +20,8 @@ export function SensibilidadTab() {
   const [conclusiones, setConclusiones] = useState<string | null>(null)
 
   useEffect(() => {
-    loadSobolIndices().then(setIndices)
-    loadSensibilidadConclusiones().then(setConclusiones)
+    loadSobolIndices().then(setIndices).catch(console.error)
+    loadSensibilidadConclusiones().then(setConclusiones).catch(console.error)
   }, [])
 
   return (

@@ -31,9 +31,11 @@ export function CalibracionTab() {
   const [alertas, setAlertas] = useState<string[]>([])
 
   useEffect(() => {
-    loadParameterEstimates().then(setParams)
-    loadCalibrationMetrics().then(setMetrics)
-    loadSuposicionesErrores().then((text) => setAlertas(extractRevisarLines(text)))
+    loadParameterEstimates().then(setParams).catch(console.error)
+    loadCalibrationMetrics().then(setMetrics).catch(console.error)
+    loadSuposicionesErrores()
+      .then((text) => setAlertas(extractRevisarLines(text)))
+      .catch(console.error)
   }, [])
 
   return (

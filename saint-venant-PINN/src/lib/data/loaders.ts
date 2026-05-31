@@ -13,7 +13,7 @@ function parseCsv<T>(
   text: string,
   transform: (row: Record<string, string>) => T,
 ): T[] {
-  const lines = text.trim().split("\n")
+  const lines = text.trim().split(/\r?\n/).filter((l) => l.trim() !== "")
   const headers = lines[0].split(",").map((h) => h.trim())
   return lines.slice(1).map((line) => {
     const values = line.split(",").map((v) => v.trim())
