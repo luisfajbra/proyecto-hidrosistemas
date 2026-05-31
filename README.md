@@ -96,6 +96,55 @@ que destruye los pesos de la red.
 Configuración final: N_EPOCHS_ADAM=6000, N_EPOCHS_WARMUP=2000, N_EPOCHS_RAMP=1000,
 N_ITER_LBFGS=500, LAMBDA_PDE=0.05.
 
+### Tercera implementación — identificabilidad (h-network + L_h + L_steady)
+
+**Problema diagnosticado:** La PINN convergía a soluciones espurias con valores
+incorrectos de n y B_w (ej. n → 0.012, B_w → 19.5 en lugar de 0.035 y 50 m).
+Las pérdidas L_data y L_pde bajaban, pero los parámetros divergían de los valores
+verdaderos.
+
+**Causa raíz:** dos problemas acoplados:
+
+1. **Compensación interna de la red.** La red predecía A(x,t) libremente. Al disminuir B_w,
+   la red ajustaba A internamente para mantener h = A/B_w razonable, desacoplando B_w
+   de la geometría hidráulica real. B_w solo aparecía en la pendiente de fricción Sf,
+   con influencia débil sobre L_pde.
+
+2. **Identificabilidad insuficiente.** Estimar n y B_w desde solo Q en x=0 y x=L es un
+   problema sub-determinado: múltiples pares (n, B_w) producen hidrogramas similares en
+   los bordes. La columna h_outlet_m del CSV no se estaba usando, perdiendo información
+   que rompe esa degeneración.
+
+**Fixes aplicados:**
+
+| Fix | Cambio | Razón |
+|-----|--------|-------|
+| h-network | Red predice (h, Q); A = B_w·h estricto en pde_residuals() | B_w aparece en continuidad, radio hidráulico y Sf simultáneamente; la red no puede compensarlo internamente |
+| L_h | MSE(h_pred en x=L − h_obs) usando h_outlet_m del CSV | La profundidad junto con el caudal proporciona la curva de aforo en x=L, que identifica n y B_w independientemente |
+| L_steady | Residuos Saint-Venant en t=0 via autograd | A t=0 el canal está en flujo uniforme estacionario; los residuos → 0 implica Manning implícitamente; activo desde época 0, ancla los parámetros antes de que L_pde intervenga |
+
+**Función de pérdida final:**
+
+```
+L_total = λ_data · L_data  +  λ_h · L_h  +  λ_pde(t) · L_pde  +  λ_steady · L_steady
+```
+
+Donde:
+- **L_data** = MSE(Q_pred/Q_max − Q_obs/Q_max) en x=0 y x=L, post-warmup
+- **L_h** = MSE(h_pred/h_max − h_obs/h_max) en x=L, post-warmup
+- **L_pde** = residuos Saint-Venant en 2000 puntos interiores (con ramp 0→λ_pde)
+- **L_steady** = residuos Saint-Venant en 200 puntos x aleatorios a t=0
+
+**Configuración:**
+
+```python
+LAMBDA_DATA    = 1.0     # peso caudales observados
+LAMBDA_H       = 1.0     # peso profundidades observadas
+LAMBDA_PDE     = 0.05    # peso física interior (con warmup + ramp)
+LAMBDA_STEADY  = 0.1     # peso condición inicial estacionaria
+N_COLLOC_STEADY = 200    # puntos de colocación en t=0
+```
+
 ## Instalación
 
 ```bash
