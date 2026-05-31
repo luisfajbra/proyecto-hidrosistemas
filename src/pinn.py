@@ -17,8 +17,10 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
+from src.config import DEFAULT_NUMERICAL, DEFAULT_PHYSICAL, DEFAULT_PINN
+
 G = 9.81
-MIN_AREA = 1e-4
+MIN_VAL = 1e-4
 
 # ── Configuración de estimación ───────────────────────────────────────────────
 # Cambiar True/False para incluir o excluir parámetros del entrenamiento.
@@ -40,12 +42,12 @@ class SVPINN(nn.Module):
     def __init__(
         self,
         *,
-        hidden_size: int = 64,
-        n_layers: int = 4,
-        S0: float = 0.001,
-        beta: float = 1.0,
-        n_init: float = 0.030,
-        Bw_init: float = 45.0,
+        hidden_size: int = DEFAULT_PINN.hidden_size,
+        n_layers: int = DEFAULT_PINN.n_layers,
+        S0: float = DEFAULT_PHYSICAL.bed_slope,
+        beta: float = DEFAULT_PINN.beta,
+        n_init: float = DEFAULT_PINN.n_init,
+        Bw_init: float = DEFAULT_PINN.bw_init,
         estimate_params: dict[str, bool] | None = None,
     ) -> None:
         super().__init__()
@@ -85,10 +87,10 @@ class SVPINN(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         inp = torch.stack([x_norm, t_norm], dim=-1)
         out = self.net(inp)
-        # softplus garantiza A > MIN_AREA y Q > MIN_AREA en todo momento
-        A = nn.functional.softplus(out[..., 0]) + MIN_AREA
-        Q = nn.functional.softplus(out[..., 1]) + MIN_AREA
-        return A, Q
+        # softplus garantiza h > MIN_VAL y Q > MIN_VAL en todo momento
+        h = nn.functional.softplus(out[..., 0]) + MIN_VAL  # profundidad [m]
+        Q = nn.functional.softplus(out[..., 1]) + MIN_VAL  # caudal [m³/s]
+        return h, Q
 
 
 # ── Residuos de la PDE ────────────────────────────────────────────────────────
@@ -125,10 +127,10 @@ def pde_residuals(
     R_hyd = A / per                          # radio hidráulico [m]
 
     # Flujo de momentum: F_Q = β Q²/A + g h_c A
-    F_Q = beta * Q**2 / (A + MIN_AREA) + G * h_c * A
+    F_Q = beta * Q**2 / (A + MIN_VAL) + G * h_c * A
 
     # Pendiente de fricción de Manning: Sf = n² Q|Q| / (A² R^(4/3))
-    Sf = n**2 * Q * torch.abs(Q) / ((A + MIN_AREA)**2 * R_hyd**(4.0 / 3.0))
+    Sf = n**2 * Q * torch.abs(Q) / ((A + MIN_VAL)**2 * R_hyd**(4.0 / 3.0))
 
     # Derivadas por autograd (regla de la cadena: ∂A/∂t = (∂A/∂t_norm)/T)
     ones     = torch.ones_like(A)
@@ -162,15 +164,15 @@ def train(
     t_data: torch.Tensor,
     L: float,
     T: float,
-    lambda_data: float = 1.0,
-    lambda_pde: float = 0.05,
-    n_epochs_adam: int = 5000,
-    n_epochs_warmup: int = 0,
-    n_epochs_ramp: int = 0,
-    n_iter_lbfgs: int = 500,
-    n_colloc: int = 2000,
-    resample_every: int = 1000,
-    t_warmup: float = 3600.0,
+    lambda_data: float = DEFAULT_PINN.lambda_data,
+    lambda_pde: float = DEFAULT_PINN.lambda_pde,
+    n_epochs_adam: int = DEFAULT_PINN.n_epochs_adam,
+    n_epochs_warmup: int = DEFAULT_PINN.n_epochs_warmup,
+    n_epochs_ramp: int = DEFAULT_PINN.n_epochs_ramp,
+    n_iter_lbfgs: int = DEFAULT_PINN.n_iter_lbfgs,
+    n_colloc: int = DEFAULT_PINN.n_colloc,
+    resample_every: int = DEFAULT_PINN.resample_every,
+    t_warmup: float = DEFAULT_NUMERICAL.warmup_seconds,
     verbose_every: int = 500,
 ) -> TrainResult:
     """Entrena la PINN con Adam (exploración) y L-BFGS (convergencia fina).
@@ -247,7 +249,10 @@ def train(
         optimizer.zero_grad()
         l_total, l_data, l_pde = _compute_loss(x_c, t_c, lp=lp_current)
         l_total.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(
+            model.parameters(),
+            max_norm=DEFAULT_PINN.gradient_clip_max_norm,
+        )
         optimizer.step()
 
         if epoch % verbose_every == 0 or epoch == n_epochs_adam - 1:
