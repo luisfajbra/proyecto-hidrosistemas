@@ -1,6 +1,6 @@
 """PINN para estimación de parámetros del modelo Saint-Venant 1D.
 
-Red MLP f(x_norm, t_norm) -> (A, Q) con activación sigmoid en capas ocultas
+Red MLP f(x_norm, t_norm) -> (A, Q) con activación tanh en capas ocultas
 y softplus en la capa de salida (garantiza A > 0, Q > 0).
 Los parámetros físicos n y B_w se almacenan en log-espacio como nn.Parameter.
 
@@ -52,9 +52,9 @@ class SVPINN(nn.Module):
         ep = ESTIMATE_PARAMS if estimate_params is None else estimate_params
 
         # MLP: 2 → [hidden_size]*n_layers → 2
-        layers: list[nn.Module] = [nn.Linear(2, hidden_size), nn.Sigmoid()]
+        layers: list[nn.Module] = [nn.Linear(2, hidden_size), nn.Tanh()]
         for _ in range(n_layers - 1):
-            layers += [nn.Linear(hidden_size, hidden_size), nn.Sigmoid()]
+            layers += [nn.Linear(hidden_size, hidden_size), nn.Tanh()]
         layers.append(nn.Linear(hidden_size, 2))
         self.net = nn.Sequential(*layers)
 
@@ -165,6 +165,7 @@ def train(
     lambda_data: float = 1.0,
     lambda_pde: float = 0.05,
     n_epochs_adam: int = 5000,
+    n_epochs_warmup: int = 0,
     n_iter_lbfgs: int = 500,
     n_colloc: int = 2000,
     resample_every: int = 1000,
@@ -177,14 +178,20 @@ def train(
     xL_data: Q observado en x=L [m³/s], shape (nt,)
     t_data:  tiempos [s],              shape (nt,)
     L, T:    longitud del canal [m] y duración [s]
+    n_epochs_warmup: épocas iniciales con lambda_pde=0 (solo ajuste de datos).
+                     Permite que la red aprenda la variación temporal antes de
+                     introducir la restricción física.
     """
     x0_data = x0_data.float()
     xL_data = xL_data.float()
     t_data  = t_data.float()
 
-    post_warm  = t_data >= t_warmup
-    t_post     = t_data[post_warm]
-    T_total    = float(t_data[-1]) if T <= 0 else float(T)
+    post_warm = t_data >= t_warmup
+    t_post    = t_data[post_warm]
+    T_total   = float(t_data[-1]) if T <= 0 else float(T)
+
+    # Escala de Q para normalizar L_data (evita desbalance con L_pde)
+    q_scale = max(x0_data.max().item(), xL_data.max().item(), 1.0)
 
     loss_history: list[dict[str, Any]] = []
 
@@ -195,24 +202,24 @@ def train(
         return x_c, t_c
 
     def _compute_loss(
-        x_c: torch.Tensor, t_c: torch.Tensor
+        x_c: torch.Tensor, t_c: torch.Tensor, lp: float
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # Pérdida de datos en los dos bordes (x=0 y x=L)
+        # Datos normalizados en los dos bordes (x=0 y x=L)
         tn = t_post / T_total
         _, Q0_pred = model(torch.zeros_like(tn), tn)
         _, QL_pred = model(torch.ones_like(tn),  tn)
         Q0_obs = x0_data[post_warm]
         QL_obs = xL_data[post_warm]
         l_data = (
-            torch.mean((Q0_pred - Q0_obs) ** 2)
-            + torch.mean((QL_pred - QL_obs) ** 2)
+            torch.mean(((Q0_pred - Q0_obs) / q_scale) ** 2)
+            + torch.mean(((QL_pred - QL_obs) / q_scale) ** 2)
         )
 
-        # Pérdida de física en puntos de colocación interiores
+        # Física en puntos de colocación interiores
         R_mass, R_mom = pde_residuals(model, x_c, t_c, L=L, T=T_total)
         l_pde = torch.mean(R_mass ** 2) + torch.mean(R_mom ** 2)
 
-        l_total = lambda_data * l_data + lambda_pde * l_pde
+        l_total = lambda_data * l_data + lp * l_pde
         return l_total, l_data, l_pde
 
     # ── Fase 1: Adam ──────────────────────────────────────────────────────────
@@ -222,8 +229,14 @@ def train(
     for epoch in range(n_epochs_adam):
         if epoch > 0 and epoch % resample_every == 0:
             x_c, t_c = _sample_colloc(seed=epoch)
+
+        # Curriculum: primeras n_epochs_warmup épocas sin física
+        lp_current = 0.0 if epoch < n_epochs_warmup else lambda_pde
+        if epoch == n_epochs_warmup and n_epochs_warmup > 0:
+            print(f"[Adam {epoch:5d}] ** Activando L_pde (lambda={lambda_pde}) **")
+
         optimizer.zero_grad()
-        l_total, l_data, l_pde = _compute_loss(x_c, t_c)
+        l_total, l_data, l_pde = _compute_loss(x_c, t_c, lp=lp_current)
         l_total.backward()
         optimizer.step()
 
@@ -251,7 +264,7 @@ def train(
 
     def _closure() -> torch.Tensor:
         lbfgs.zero_grad()
-        l_total, _, _ = _compute_loss(x_c, t_c)
+        l_total, _, _ = _compute_loss(x_c, t_c, lp=lambda_pde)
         l_total.backward()
         return l_total
 
