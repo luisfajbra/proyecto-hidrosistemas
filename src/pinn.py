@@ -230,11 +230,11 @@ def train(
         if epoch % verbose_every == 0 or epoch == n_epochs_adam - 1:
             entry: dict[str, Any] = {
                 "epoch": epoch,
-                "total": float(l_total),
-                "data":  float(l_data),
-                "pde":   float(l_pde),
-                "n":     float(model.n),
-                "Bw":    float(model.Bw),
+                "total": l_total.detach().item(),
+                "data":  l_data.detach().item(),
+                "pde":   l_pde.detach().item(),
+                "n":     model.n.detach().item(),
+                "Bw":    model.Bw.detach().item(),
             }
             loss_history.append(entry)
             print(
@@ -258,9 +258,9 @@ def train(
     l_final = lbfgs.step(_closure)
     loss_history.append({
         "epoch": n_epochs_adam,
-        "total": float(l_final) if l_final is not None else float("nan"),
-        "n":  float(model.n),
-        "Bw": float(model.Bw),
+        "total": l_final.detach().item() if l_final is not None else float("nan"),
+        "n":  model.n.detach().item(),
+        "Bw": model.Bw.detach().item(),
         "phase": "lbfgs",
     })
     print(f"[L-BFGS] n={model.n:.5f}  Bw={model.Bw:.3f}")
@@ -268,6 +268,6 @@ def train(
     return TrainResult(
         model=model,
         loss_history=loss_history,
-        n_estimate=float(model.n),
-        Bw_estimate=float(model.Bw),
+        n_estimate=model.n.detach().item(),
+        Bw_estimate=model.Bw.detach().item(),
     )
