@@ -142,3 +142,132 @@ def pde_residuals(
     R_mom  = dQ_dtn / T + dFQ_dxn / L - G * A * (S0 - Sf)
 
     return R_mass, R_mom
+
+
+# ── Entrenamiento ─────────────────────────────────────────────────────────────
+
+@dataclass
+class TrainResult:
+    model: SVPINN
+    loss_history: list[dict[str, Any]]
+    n_estimate: float
+    Bw_estimate: float
+
+
+def train(
+    model: SVPINN,
+    *,
+    x0_data: torch.Tensor,
+    xL_data: torch.Tensor,
+    t_data: torch.Tensor,
+    L: float,
+    T: float,
+    lambda_data: float = 1.0,
+    lambda_pde: float = 0.05,
+    n_epochs_adam: int = 5000,
+    n_iter_lbfgs: int = 500,
+    n_colloc: int = 2000,
+    resample_every: int = 1000,
+    t_warmup: float = 3600.0,
+    verbose_every: int = 500,
+) -> TrainResult:
+    """Entrena la PINN con Adam (exploración) y L-BFGS (convergencia fina).
+
+    x0_data: Q observado en x=0 [m³/s], shape (nt,)
+    xL_data: Q observado en x=L [m³/s], shape (nt,)
+    t_data:  tiempos [s],              shape (nt,)
+    L, T:    longitud del canal [m] y duración [s]
+    """
+    x0_data = x0_data.float()
+    xL_data = xL_data.float()
+    t_data  = t_data.float()
+
+    post_warm  = t_data >= t_warmup
+    t_post     = t_data[post_warm]
+    T_total    = float(t_data[-1]) if T <= 0 else float(T)
+
+    loss_history: list[dict[str, Any]] = []
+
+    def _sample_colloc(seed: int) -> tuple[torch.Tensor, torch.Tensor]:
+        torch.manual_seed(seed)
+        x_c = torch.rand(n_colloc) * L
+        t_c = torch.rand(n_colloc) * (T_total - max(t_warmup, 0.0)) + max(t_warmup, 0.0)
+        return x_c, t_c
+
+    def _compute_loss(
+        x_c: torch.Tensor, t_c: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Pérdida de datos en los dos bordes (x=0 y x=L)
+        tn = t_post / T_total
+        _, Q0_pred = model(torch.zeros_like(tn), tn)
+        _, QL_pred = model(torch.ones_like(tn),  tn)
+        Q0_obs = x0_data[post_warm]
+        QL_obs = xL_data[post_warm]
+        l_data = (
+            torch.mean((Q0_pred - Q0_obs) ** 2)
+            + torch.mean((QL_pred - QL_obs) ** 2)
+        )
+
+        # Pérdida de física en puntos de colocación interiores
+        R_mass, R_mom = pde_residuals(model, x_c, t_c, L=L, T=T_total)
+        l_pde = torch.mean(R_mass ** 2) + torch.mean(R_mom ** 2)
+
+        l_total = lambda_data * l_data + lambda_pde * l_pde
+        return l_total, l_data, l_pde
+
+    # ── Fase 1: Adam ──────────────────────────────────────────────────────────
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    x_c, t_c = _sample_colloc(seed=0)
+
+    for epoch in range(n_epochs_adam):
+        if epoch > 0 and epoch % resample_every == 0:
+            x_c, t_c = _sample_colloc(seed=epoch)
+        optimizer.zero_grad()
+        l_total, l_data, l_pde = _compute_loss(x_c, t_c)
+        l_total.backward()
+        optimizer.step()
+
+        if epoch % verbose_every == 0 or epoch == n_epochs_adam - 1:
+            entry: dict[str, Any] = {
+                "epoch": epoch,
+                "total": float(l_total),
+                "data":  float(l_data),
+                "pde":   float(l_pde),
+                "n":     float(model.n),
+                "Bw":    float(model.Bw),
+            }
+            loss_history.append(entry)
+            print(
+                f"[Adam {epoch:5d}] "
+                f"total={l_total:.4e}  data={l_data:.4e}  pde={l_pde:.4e}  "
+                f"n={model.n:.5f}  Bw={model.Bw:.3f}"
+            )
+
+    # ── Fase 2: L-BFGS ───────────────────────────────────────────────────────
+    x_c, t_c = _sample_colloc(seed=9999)
+    lbfgs = torch.optim.LBFGS(
+        model.parameters(), lr=0.1, max_iter=n_iter_lbfgs, history_size=50
+    )
+
+    def _closure() -> torch.Tensor:
+        lbfgs.zero_grad()
+        l_total, _, _ = _compute_loss(x_c, t_c)
+        l_total.backward()
+        return l_total
+
+    l_final = lbfgs.step(_closure)
+    loss_history.append({
+        "epoch": n_epochs_adam,
+        "total": float(l_final) if l_final is not None else float("nan"),
+        "n":  float(model.n),
+        "Bw": float(model.Bw),
+        "phase": "lbfgs",
+    })
+    print(f"[L-BFGS] n={model.n:.5f}  Bw={model.Bw:.3f}")
+
+    return TrainResult(
+        model=model,
+        loss_history=loss_history,
+        n_estimate=float(model.n),
+        Bw_estimate=float(model.Bw),
+    )
