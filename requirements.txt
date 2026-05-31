@@ -6,3 +6,4 @@ jupyter>=1.0
 joblib>=1.3
 SALib>=1.4.5
 ydata-profiling>=4.6.0
+torch>=2.0
