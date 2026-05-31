@@ -40,8 +40,8 @@ export function LossCurveChart({ data, height = 360 }: LossCurveChartProps) {
 
   const layout: Partial<Layout> = {
     height,
-    xaxis: { title: "Época (Adam)" },
-    yaxis: { title: "Pérdida", type: "log" },
+    xaxis: { title: { text: "Época (Adam)" } },
+    yaxis: { title: { text: "Pérdida" }, type: "log" },
     legend: { orientation: "h", y: -0.25 },
     hovermode: "x unified",
   }

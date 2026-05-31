@@ -34,8 +34,8 @@ export function HydrographPINNChart({ data, height = 360 }: HydrographPINNChartP
 
   const layout: Partial<Layout> = {
     height,
-    xaxis: { title: "Tiempo (h)" },
-    yaxis: { title: "Caudal (m³/s)" },
+    xaxis: { title: { text: "Tiempo (h)" } },
+    yaxis: { title: { text: "Caudal (m³/s)" } },
     legend: { orientation: "h", y: -0.25 },
     hovermode: "x unified",
     shapes: [

@@ -51,14 +51,14 @@ export function HydrographChart({
 
   const layout: Partial<Layout> = {
     height,
-    xaxis: { title: "Tiempo", type: "date" },
-    yaxis: { title: "Caudal (m³/s)" },
+    xaxis: { title: { text: "Tiempo" }, type: "date" },
+    yaxis: { title: { text: "Caudal (m³/s)" } },
     hovermode: "x unified",
     legend: { orientation: "h", y: -0.25 },
     ...(showDepth
       ? {
           yaxis2: {
-            title: "Profundidad (m)",
+            title: { text: "Profundidad (m)" },
             overlaying: "y" as const,
             side: "right" as const,
           },

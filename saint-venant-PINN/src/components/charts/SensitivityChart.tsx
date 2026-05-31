@@ -38,8 +38,8 @@ export function SensitivityChart({ data, height = 360 }: SensitivityChartProps) 
   const layout: Partial<Layout> = {
     height,
     barmode: "group",
-    xaxis: { title: "Parámetro" },
-    yaxis: { title: "Índice de Sobol", range: [0, 1.1] },
+    xaxis: { title: { text: "Parámetro" } },
+    yaxis: { title: { text: "Índice de Sobol" }, range: [0, 1.1] },
     legend: { orientation: "h", y: -0.25 },
     hovermode: "closest",
   }
