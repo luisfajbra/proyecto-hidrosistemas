@@ -172,42 +172,51 @@ def train(
     *,
     x0_data: torch.Tensor,
     xL_data: torch.Tensor,
+    hL_data: torch.Tensor,
     t_data: torch.Tensor,
     L: float,
     T: float,
-    lambda_data: float = DEFAULT_PINN.lambda_data,
-    lambda_pde: float = DEFAULT_PINN.lambda_pde,
-    n_epochs_adam: int = DEFAULT_PINN.n_epochs_adam,
+    lambda_data: float   = DEFAULT_PINN.lambda_data,
+    lambda_h: float      = DEFAULT_PINN.lambda_h,
+    lambda_pde: float    = DEFAULT_PINN.lambda_pde,
+    lambda_steady: float = DEFAULT_PINN.lambda_steady,
+    n_colloc_steady: int = DEFAULT_PINN.n_colloc_steady,
+    n_epochs_adam: int   = DEFAULT_PINN.n_epochs_adam,
     n_epochs_warmup: int = DEFAULT_PINN.n_epochs_warmup,
-    n_epochs_ramp: int = DEFAULT_PINN.n_epochs_ramp,
-    n_iter_lbfgs: int = DEFAULT_PINN.n_iter_lbfgs,
-    n_colloc: int = DEFAULT_PINN.n_colloc,
-    resample_every: int = DEFAULT_PINN.resample_every,
-    t_warmup: float = DEFAULT_NUMERICAL.warmup_seconds,
-    verbose_every: int = 500,
+    n_epochs_ramp: int   = DEFAULT_PINN.n_epochs_ramp,
+    n_iter_lbfgs: int    = DEFAULT_PINN.n_iter_lbfgs,
+    n_colloc: int        = DEFAULT_PINN.n_colloc,
+    resample_every: int  = DEFAULT_PINN.resample_every,
+    t_warmup: float      = DEFAULT_NUMERICAL.warmup_seconds,
+    verbose_every: int   = 500,
 ) -> TrainResult:
-    """Entrena la PINN con Adam (exploración) y L-BFGS (convergencia fina).
+    """Entrena la PINN con Adam y L-BFGS.
 
     x0_data: Q observado en x=0 [m³/s], shape (nt,)
     xL_data: Q observado en x=L [m³/s], shape (nt,)
-    t_data:  tiempos [s],              shape (nt,)
+    hL_data: h observado en x=L [m],    shape (nt,)
+    t_data:  tiempos [s],               shape (nt,)
     L, T:    longitud del canal [m] y duración [s]
-    n_epochs_warmup: épocas iniciales con lambda_pde=0 (solo ajuste de datos).
-    n_epochs_ramp:   épocas para subir lambda_pde linealmente de 0 al valor final.
-                     Previene el spike de gradiente al activar la física abruptamente.
+    lambda_h:      peso de L_h (profundidad en x=L); activo desde época 0.
+    lambda_steady: peso de L_steady (residuos PDE en t=0); activo desde época 0.
+    n_colloc_steady: número de puntos de colocación en t=0.
     """
     x0_data = x0_data.float()
     xL_data = xL_data.float()
+    hL_data = hL_data.float()
     t_data  = t_data.float()
 
     post_warm = t_data >= t_warmup
     t_post    = t_data[post_warm]
     T_total   = float(t_data[-1]) if T <= 0 else float(T)
 
-    # Escala de Q para normalizar L_data (evita desbalance con L_pde)
     q_scale = max(x0_data.max().item(), xL_data.max().item(), 1.0)
+    h_scale = max(hL_data.max().item(), 1e-2)
 
     loss_history: list[dict[str, Any]] = []
+
+    # Puntos de colocación en t=0 (fijos durante todo el entrenamiento)
+    x_steady, t_steady = _sample_steady_colloc(n_colloc_steady, L)
 
     def _sample_colloc(seed: int) -> tuple[torch.Tensor, torch.Tensor]:
         torch.manual_seed(seed)
@@ -217,8 +226,8 @@ def train(
 
     def _compute_loss(
         x_c: torch.Tensor, t_c: torch.Tensor, lp: float
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # Datos normalizados en los dos bordes (x=0 y x=L)
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        # ── L_data: caudales en x=0 y x=L ───────────────────────────────────
         tn = t_post / T_total
         _, Q0_pred = model(torch.zeros_like(tn), tn)
         _, QL_pred = model(torch.ones_like(tn),  tn)
@@ -229,12 +238,26 @@ def train(
             + torch.mean(((QL_pred - QL_obs) / q_scale) ** 2)
         )
 
-        # Física en puntos de colocación interiores
+        # ── L_h: profundidad observada en x=L ────────────────────────────────
+        hL_pred, _ = model(torch.ones_like(tn), tn)
+        hL_obs = hL_data[post_warm]
+        l_h = torch.mean(((hL_pred - hL_obs) / h_scale) ** 2)
+
+        # ── L_pde: residuos Saint-Venant en puntos interiores ────────────────
         R_mass, R_mom = pde_residuals(model, x_c, t_c, L=L, T=T_total)
         l_pde = torch.mean(R_mass ** 2) + torch.mean(R_mom ** 2)
 
-        l_total = lambda_data * l_data + lp * l_pde
-        return l_total, l_data, l_pde
+        # ── L_steady: residuos en t=0 (flujo uniforme estacionario inicial) ──
+        R_mass_s, R_mom_s = pde_residuals(model, x_steady, t_steady, L=L, T=T_total)
+        l_steady = torch.mean(R_mass_s ** 2) + torch.mean(R_mom_s ** 2)
+
+        l_total = (
+            lambda_data    * l_data
+            + lambda_h     * l_h
+            + lp           * l_pde
+            + lambda_steady * l_steady
+        )
+        return l_total, l_data, l_h, l_pde, l_steady
 
     # ── Fase 1: Adam ──────────────────────────────────────────────────────────
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -258,7 +281,7 @@ def train(
                 print(f"[Adam {epoch:5d}] ** L_pde completo (lambda={lambda_pde}) **")
 
         optimizer.zero_grad()
-        l_total, l_data, l_pde = _compute_loss(x_c, t_c, lp=lp_current)
+        l_total, l_data, l_h, l_pde, l_steady = _compute_loss(x_c, t_c, lp=lp_current)
         l_total.backward()
         torch.nn.utils.clip_grad_norm_(
             model.parameters(),
@@ -268,17 +291,20 @@ def train(
 
         if epoch % verbose_every == 0 or epoch == n_epochs_adam - 1:
             entry: dict[str, Any] = {
-                "epoch": epoch,
-                "total": l_total.detach().item(),
-                "data":  l_data.detach().item(),
-                "pde":   l_pde.detach().item(),
-                "n":     model.n.detach().item(),
-                "Bw":    model.Bw.detach().item(),
+                "epoch":  epoch,
+                "total":  l_total.detach().item(),
+                "data":   l_data.detach().item(),
+                "h":      l_h.detach().item(),
+                "pde":    l_pde.detach().item(),
+                "steady": l_steady.detach().item(),
+                "n":      model.n.detach().item(),
+                "Bw":     model.Bw.detach().item(),
             }
             loss_history.append(entry)
             print(
                 f"[Adam {epoch:5d}] "
-                f"total={l_total:.4e}  data={l_data:.4e}  pde={l_pde:.4e}  "
+                f"total={l_total:.4e}  data={l_data:.4e}  h={l_h:.4e}  "
+                f"pde={l_pde:.4e}  steady={l_steady:.4e}  "
                 f"n={model.n:.5f}  Bw={model.Bw:.3f}"
             )
 
@@ -290,7 +316,7 @@ def train(
 
     def _closure() -> torch.Tensor:
         lbfgs.zero_grad()
-        l_total, _, _ = _compute_loss(x_c, t_c, lp=lambda_pde)
+        l_total, _, _, _, _ = _compute_loss(x_c, t_c, lp=lambda_pde)
         l_total.backward()
         return l_total
 
