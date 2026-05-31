@@ -271,3 +271,35 @@ def train(
         n_estimate=model.n.detach().item(),
         Bw_estimate=model.Bw.detach().item(),
     )
+
+
+# ── Comparación de estimaciones ───────────────────────────────────────────────
+
+def build_comparison_table(
+    *,
+    n_pinn: float,
+    Bw_pinn: float,
+    n_true: float,
+    Bw_true: float,
+    glue_csv_path: str | None = None,
+) -> pd.DataFrame:
+    """Tabla parámetro | verdadero | PINN | calibración GLUE (si existe).
+
+    glue_csv_path: ruta a glue_parametros_aceptados.csv de notebook 03.
+                   Si es None, la columna GLUE no se incluye.
+                   Si el archivo no existe, la columna GLUE contiene NaN.
+    """
+    row_n  = {"parametro": "n (Manning)", "verdadero": n_true,  "PINN": n_pinn}
+    row_bw = {"parametro": "B_w [m]",    "verdadero": Bw_true, "PINN": Bw_pinn}
+
+    if glue_csv_path is not None:
+        glue_path = Path(glue_csv_path)
+        if glue_path.is_file():
+            glue_df = pd.read_csv(glue_csv_path)
+            row_n["calibracion_GLUE"]  = float(glue_df["n"].median())
+            row_bw["calibracion_GLUE"] = float(glue_df["B_W"].median())
+        else:
+            row_n["calibracion_GLUE"]  = float("nan")
+            row_bw["calibracion_GLUE"] = float("nan")
+
+    return pd.DataFrame([row_n, row_bw])
