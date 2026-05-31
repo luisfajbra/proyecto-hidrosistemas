@@ -23,7 +23,6 @@ Los CSVs viven en `proyecto-sv-mh/data/synthetic/` — fuera del root de Vite. D
   - `series_corta_shift.csv`, `series_larga_shift.csv`
   - `sobol_indices.csv`, `sobol_ejecucion.csv`
   - `metricas_ols_cal_val.csv`, `parametros_ols_sensibilidad.csv`
-  - `batimetria.csv`
   - `sensibilidad_conclusiones.txt`, `suposiciones_errores.txt`
 - **Series largas** (200 000 filas ≈ 6–8 MB): carga on-demand al seleccionar, con `Skeleton` durante la carga.
 - **CSVs PINN** (`pinn_loss_history.csv`, `pinn_hidrograma.csv`): aún no existen; los loaders los intentan cargar y, si fallan, los componentes muestran `Skeleton` con mensaje "pendiente de ejecutar notebook 04".
@@ -32,10 +31,10 @@ Los CSVs viven en `proyecto-sv-mh/data/synthetic/` — fuera del root de Vite. D
 
 ## Navegación
 
-`Tabs` horizontal (shadcn) en el layout raíz. 6 pestañas en orden:
+`Tabs` horizontal (shadcn) en el layout raíz. 5 pestañas en orden:
 
 ```
-[Resumen] [Hidrogramas] [Sensibilidad] [Calibración] [PINN] [Sección del canal]
+[Resumen] [Hidrogramas] [Sensibilidad] [Calibración] [PINN]
 ```
 
 ---
@@ -58,7 +57,6 @@ saint-venant-PINN/
         PlotWrapper.tsx          ← createPlotlyComponent(Plotly) — instancia única
         HydrographChart.tsx
         SensitivityChart.tsx
-        CrossSectionChart.tsx
         LossCurveChart.tsx       ← curva de pérdida PINN (log scale)
         HydrographPINNChart.tsx  ← Q_obs vs Q_PINN + banda warm-up
       dashboard/
@@ -67,7 +65,6 @@ saint-venant-PINN/
         SensibilidadTab.tsx
         CalibracionTab.tsx
         PinnTab.tsx
-        SeccionCanalTab.tsx
       MetricCard.tsx             ← Card: label + valor + unidad
       DatasetSelector.tsx        ← Select serie (corta/larga × muskingum/ruido/shift)
     App.tsx                      ← layout raíz + Tabs
@@ -105,14 +102,6 @@ interface ParameterEstimate {
   verdadero: number
   ols: number
   SE: number | null
-}
-
-interface BathymetryPoint {
-  estacion_x_m: number
-  pos_y_m: number
-  z_lecho_m: number
-  z_banco_m: number
-  z_superficie_m: number
 }
 
 interface PinnLossPoint {
@@ -224,21 +213,6 @@ Instalar con CLI antes de implementar: `button`, `select`, `badge`, `alert`, `sk
 - `HydrographPINNChart`: espera `t_h, Q_obs, Q_pinn`; banda gris para warm-up period. Si CSV ausente → `Skeleton` con label "Q_obs vs Q_PINN — pendiente de ejecutar notebook 04".
 
 **Estimados PINN** (cuando disponibles): `MetricCard` para `n_estimate` y `Bw_estimate` vs verdadero.
-
-### 6. Sección del canal
-
-**Datos:** `batimetria.csv`.
-
-**Esquema CSV:** `estacion_x_m, pos_y_m, z_lecho_m, z_banco_m, z_superficie_m`.
-
-**Componentes:**
-- `Select` para elegir estación (`estacion_x_m`; valores únicos del CSV).
-- `CrossSectionChart`: Plotly chart de sección transversal para la estación seleccionada:
-  - X: `pos_y_m` (posición transversal)
-  - Y: `z_lecho_m` (perfil del lecho, área rellena)
-  - Línea horizontal: `z_banco_m` (cota de banco)
-  - Línea horizontal: `z_superficie_m` (lámina de agua, color semántico)
-- Diseño preparado para extensión futura: parámetro `waterLevel` opcional en `CrossSectionChart` para mostrar dinámicamente la lámina en cualquier cota.
 
 ---
 
