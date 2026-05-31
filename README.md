@@ -74,6 +74,28 @@ Tres causas apiladas:
 Configuración final del notebook: N_EPOCHS_ADAM=6000, N_EPOCHS_WARMUP=2000,
 N_ITER_LBFGS=500, LAMBDA_PDE=0.05.
 
+### Segunda implementación (fallida) — spike de L_pde
+
+**Resultado:** L_pde creció de 1 a 10⁸ durante las 2000 épocas de warmup.
+Al activar la física abruptamente en la época 2000, el gradiente de L_pde fue ≈10⁷
+vs el de L_data ≈0.1. El optimizador destruyó todo lo aprendido en un solo paso:
+Q_PINN colapsó a ≈0 m³/s, n = 0.0003, B_w = 1.7 m.
+
+**Causa raíz:** Durante el warmup (solo L_data), la red aprende los bordes pero en los
+puntos interiores sin restricción produce valores no físicos con gradientes espaciales
+enormes. Al activar L_pde, esos residuos catastrófico generan un spike de gradiente
+que destruye los pesos de la red.
+
+### Fixes segunda ronda
+
+| Fix | Cambio | Razón |
+|-----|--------|-------|
+| Gradient clipping | `clip_grad_norm_(max_norm=1.0)` en cada paso Adam | Limita el tamaño del paso; previene el spike catastrófico |
+| Ramp gradual | n_epochs_ramp=1000: lambda_pde sube linealmente 0 → 0.05 | Transición suave; red adapta gradualmente sin choque |
+
+Configuración final: N_EPOCHS_ADAM=6000, N_EPOCHS_WARMUP=2000, N_EPOCHS_RAMP=1000,
+N_ITER_LBFGS=500, LAMBDA_PDE=0.05.
+
 ## Instalación
 
 ```bash
