@@ -89,3 +89,56 @@ class SVPINN(nn.Module):
         A = nn.functional.softplus(out[..., 0]) + MIN_AREA
         Q = nn.functional.softplus(out[..., 1]) + MIN_AREA
         return A, Q
+
+
+# ── Residuos de la PDE ────────────────────────────────────────────────────────
+
+def pde_residuals(
+    model: SVPINN,
+    x_col: torch.Tensor,
+    t_col: torch.Tensor,
+    L: float,
+    T: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Residuos de Saint-Venant en puntos de colocación (x_col [m], t_col [s]).
+
+    Usa torch.autograd.grad con create_graph=True para que los gradientes
+    fluyan hasta n y Bw durante el entrenamiento.
+
+    Returns: (R_mass, R_mom) — shape (N,) cada uno.
+    """
+    # Normalizar y crear hojas de autograd para derivadas espaciales/temporales
+    x_norm = (x_col / L).clone().detach().requires_grad_(True)
+    t_norm = (t_col / T).clone().detach().requires_grad_(True)
+
+    A, Q = model(x_norm, t_norm)
+
+    Bw   = model.Bw
+    n    = model.n
+    S0   = model.S0
+    beta = model.beta
+
+    # Geometría hidráulica
+    h     = torch.clamp(A / Bw, min=1e-4)
+    h_c   = 0.5 * h
+    per   = Bw + 2.0 * h
+    R_hyd = A / per                          # radio hidráulico [m]
+
+    # Flujo de momentum: F_Q = β Q²/A + g h_c A
+    F_Q = beta * Q**2 / (A + MIN_AREA) + G * h_c * A
+
+    # Pendiente de fricción de Manning: Sf = n² Q|Q| / (A² R^(4/3))
+    Sf = n**2 * Q * torch.abs(Q) / ((A + MIN_AREA)**2 * R_hyd**(4.0 / 3.0))
+
+    # Derivadas por autograd (regla de la cadena: ∂A/∂t = (∂A/∂t_norm)/T)
+    ones     = torch.ones_like(A)
+    dA_dtn   = torch.autograd.grad(A,   t_norm, grad_outputs=ones, create_graph=True)[0]
+    dQ_dxn   = torch.autograd.grad(Q,   x_norm, grad_outputs=ones, create_graph=True)[0]
+    dFQ_dxn  = torch.autograd.grad(F_Q, x_norm, grad_outputs=ones, create_graph=True)[0]
+    dQ_dtn   = torch.autograd.grad(Q,   t_norm, grad_outputs=ones, create_graph=True)[0]
+
+    # Residuos de continuidad y momentum
+    R_mass = dA_dtn / T + dQ_dxn / L
+    R_mom  = dQ_dtn / T + dFQ_dxn / L - G * A * (S0 - Sf)
+
+    return R_mass, R_mom
