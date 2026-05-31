@@ -1,14 +1,13 @@
-import createPlotlyComponent from "react-plotly.js/factory"
+import { useEffect, useRef } from "react"
 import Plotly from "plotly.js-dist-min"
 import type { Data, Layout, Config } from "plotly.js"
-
-const PlotlyChart = createPlotlyComponent(Plotly)
 
 const BASE_LAYOUT: Partial<Layout> = {
   paper_bgcolor: "transparent",
   plot_bgcolor: "transparent",
   font: { family: "Geist Variable, sans-serif", size: 12 },
   margin: { t: 32, r: 20, b: 56, l: 64 },
+  autosize: true,
 }
 
 const BASE_CONFIG: Partial<Config> = {
@@ -31,14 +30,24 @@ export function PlotWrapper({
   style,
   className,
 }: PlotWrapperProps) {
-  return (
-    <PlotlyChart
-      data={data}
-      layout={{ ...BASE_LAYOUT, ...layout }}
-      config={{ ...BASE_CONFIG, ...config }}
-      style={{ width: "100%", height: "100%", ...style }}
-      className={className}
-      useResizeHandler
-    />
-  )
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!ref.current) return
+    Plotly.react(
+      ref.current,
+      data,
+      { ...BASE_LAYOUT, ...layout },
+      { ...BASE_CONFIG, ...config },
+    )
+  })
+
+  useEffect(() => {
+    const el = ref.current
+    return () => {
+      if (el) Plotly.purge(el)
+    }
+  }, [])
+
+  return <div ref={ref} style={{ width: "100%", ...style }} className={className} />
 }
