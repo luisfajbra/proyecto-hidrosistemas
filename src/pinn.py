@@ -153,6 +153,20 @@ class TrainResult:
     Bw_estimate: float
 
 
+def _sample_steady_colloc(
+    n: int, L: float
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Puntos aleatorios en x a t=0 para la condición inicial de flujo uniforme.
+
+    Estos puntos se generan una sola vez antes del bucle de entrenamiento.
+    Los residuos PDE en t=0 deben ser cero si la red y los parámetros son
+    consistentes con el flujo uniforme estacionario inicial.
+    """
+    x_s = torch.rand(n) * L
+    t_s = torch.zeros(n)
+    return x_s, t_s
+
+
 def train(
     model: SVPINN,
     *,
